@@ -45,7 +45,7 @@ def run(config_args):
         tf.config.experimental.set_memory_growth(gpu, True)
 
     #
-    # Create list of InputData, each for a modality
+    # Create InputData
 
     input_lists = copy.deepcopy(config_args['input_lists'])
     data_dir = os.path.expanduser(input_lists.get('data_dir'))
@@ -79,7 +79,7 @@ def run(config_args):
         print(f'\nModel is rebuilt for image size {test_image_size}.\n')
 
     #
-    # Testing
+    # Inference
 
     output_dir = os.path.join(target_dir, config_args['test']['output_folder'])
     os.makedirs(output_dir, exist_ok=True)
@@ -97,7 +97,7 @@ def inference(
         label_mapping=None,
         output_origin=None,
 ):
-    """This function performs prediction of testing data.
+    """This function performs prediction on testing data.
 
     Args:
         model: A trained model.
@@ -105,9 +105,6 @@ def inference(
         output_dir: Output directory.
         label_mapping: A dict for label mapping if given (default: None).
         output_origin: Output origin (default: None).
-
-    Returns:
-        All ground truths (y_true) and predictions (y_pred).
     """
     test_num_batches = input_data.get_test_num_batches()
 
