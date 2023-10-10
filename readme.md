@@ -4,7 +4,7 @@ This repository contains our proposed image segmentation frameworks applicable t
 
 1. **HartleyMHA**
 
-   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “HartleyMHA: self-attention in frequency domain for resolution-robust and parameter-efficient 3D image segmentation,” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2023, pp. 364–373.
+   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “HartleyMHA: self-attention in frequency domain for resolution-robust and parameter-efficient 3D image segmentation,” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2023, pp. 364–373. [[pdf](https://arxiv.org/pdf/2310.04466.pdf)]
     ```
    @inproceedings{Conference:Wong:MICCAI2023:hartleymha,
      title =       {{HartleyMHA}: self-attention in frequency domain for resolution-robust and parameter-efficient {3D} image segmentation},
@@ -17,7 +17,7 @@ This repository contains our proposed image segmentation frameworks applicable t
 
 2. **FNOSeg3D**
 
-   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “FNOSeg3D: resolution-robust 3D image segmentation with Fourier neural operator,” in *IEEE International Symposium on Biomedical Imaging (ISBI)*, 2023, pp. 1–5.
+   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “FNOSeg3D: resolution-robust 3D image segmentation with Fourier neural operator,” in *IEEE International Symposium on Biomedical Imaging (ISBI)*, 2023, pp. 1–5. [[pdf](https://arxiv.org/pdf/2310.03872.pdf)]
     ```
    @inproceedings{Conference:Wong:ISBI2023:fnoseg3d,
      title =       {{FNOSeg3D}: resolution-robust {3D} image segmentation with {Fourier} neural operator},
