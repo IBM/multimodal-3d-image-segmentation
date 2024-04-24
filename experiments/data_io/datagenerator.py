@@ -128,7 +128,7 @@ class DataGenerator(object):
             # Shift
             if shift is not None and any(sh != 0 for sh in shift):
                 shift = shift[::-1]
-                shift = np.asarray(shift, np.float32)
+                shift = np.asarray(shift)
                 shift_matrix = np.eye(self.ndim - 1)
                 shift_matrix[:-1, -1] = shift
                 transform_matrix = shift_matrix if transform_matrix is None else np.dot(shift_matrix, transform_matrix)
