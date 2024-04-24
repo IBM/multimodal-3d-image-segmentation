@@ -194,25 +194,34 @@ def run(config_args):
             model = model_new
             print(f'\nModel is rebuilt for image size {test_image_size}.\n')
 
+    if not config_args['main']['is_test'] and not config_args['main']['is_statistics']:
+        return
+
     #
     # Testing
 
-    is_print = config_args['train'].get('is_print', True) if 'train' in config_args else True
-    test_dir = os.path.join(output_dir, config_args['test']['output_folder'])
+    test_args = copy.deepcopy(config_args['test'])
+    test_dir = os.path.join(output_dir, test_args.pop('output_folder', 'test'))
+    if 'is_print' not in test_args and 'train' in config_args:
+        is_print = config_args['train'].get('is_print', True)
+    else:
+        is_print = test_args.get('is_print', True)
+
     y_true = None
     y_pred = None
     if config_args['main']['is_test']:
-        label_mapping = config_args['test'].get('label_mapping')
-        save_image = config_args['test'].get('save_image', False)
-        output_origin = config_args['test'].get('output_origin')
-        y_true, y_pred = testing(model, input_data, test_dir, label_mapping, save_image, output_origin, is_print)
+        test_args['model'] = model
+        test_args['input_data'] = input_data
+        test_args['output_dir'] = test_dir
+        test_args['is_print'] = is_print
+        y_true, y_pred = testing(**test_args)
+
     if config_args['main']['is_statistics']:
         idx_y_modalities = input_args.get('idx_y_modalities')
         if idx_y_modalities:
             if not config_args['main']['is_test']:  # Load from existing test results
-                results = np.load(os.path.join(test_dir, 'y_true_pred.npz'))
+                results = np.load(os.path.join(str(test_dir), 'y_true_pred.npz'))
                 y_true, y_pred = results['y_true'], results['y_pred']
-
             idx_y = idx_y_modalities[0]
             statistics(y_true, y_pred, data_lists_test[idx_y], test_dir, is_print)
             statistics_regional(y_true, y_pred, data_lists_test[idx_y], test_dir, is_print)
