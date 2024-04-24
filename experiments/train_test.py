@@ -61,10 +61,6 @@ def training(
     if os.path.exists(join(output_dir, 'stdout.txt')):
         raise RuntimeError('stdout.txt already exists!')  # Avoid accidents
 
-    # Empty file
-    with open(join(output_dir, 'stdout.txt'), 'w'):
-        pass
-
     num_epochs = int(num_epochs)
     train_num_batches = input_data.get_train_num_batches()
     valid_num_batches = input_data.get_valid_num_batches()
@@ -264,7 +260,7 @@ def testing(
     y_pred = []
     n_batches = 0
     for xy in test_flow:
-        if type(xy) == tuple:
+        if isinstance(xy, (tuple, list)):
             x, y = xy
             y_true.append(np.asarray(y, dtype=np.int16)[..., 0])  # Last dimension of size 1 is ignored
         else:
