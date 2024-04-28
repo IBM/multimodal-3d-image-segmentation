@@ -85,18 +85,18 @@ def training(
     num_labels = model.output_shape[-1]
 
     @tf.function
-    def train_step(x, y):
+    def train_step(inputs, y_true):
         with tf.GradientTape() as tape:
-            y_pred = model(x, training=True)
-            loss = model.loss(y, y_pred)
-        grads = tape.gradient(loss, model.trainable_weights)
+            y_pred = model(inputs, training=True)
+            loss_val = model.loss(y_true, y_pred)
+        grads = tape.gradient(loss_val, model.trainable_weights)
         model.optimizer.apply(grads, model.trainable_weights)
-        return loss
+        return loss_val
 
     @tf.function
-    def test_step(x, y):
-        y_pred = model(x, training=False)
-        return model.loss(y, y_pred)
+    def test_step(inputs, y_true):
+        y_pred = model(inputs, training=False)
+        return model.loss(y_true, y_pred)
 
     if is_print:
         print('Training started')
@@ -247,8 +247,8 @@ def testing(
     test_flow = input_data.get_test_flow()
 
     @tf.function
-    def test_step(x):
-        return model(x, training=False)
+    def test_step(inputs):
+        return model(inputs, training=False)
 
     if is_print:
         print('Testing started')
