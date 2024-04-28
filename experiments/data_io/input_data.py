@@ -20,7 +20,7 @@ class InputData(object):
     Note that the label images are also considered as a modality associated with `idx_y_modalities`.
 
     Args:
-        reader: For reading a sample from a file (default: None).
+        reader: For reading a sample as a Numpy array. If None (default), a dummy reader = lambda x: x is used.
         data_lists_train: A list of filename lists. Each filename list contains the full paths
             to the data samples of a modality (default: None).
         data_lists_valid: A list of filename lists. Each filename list contains the full paths
