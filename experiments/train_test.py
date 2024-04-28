@@ -18,8 +18,8 @@ import time
 from os.path import join
 import pandas as pd
 
-from tensorflow.keras.utils import plot_model
-from tensorflow.keras.models import Model
+from keras.utils import plot_model
+import tensorflow as tf
 
 from data_io.input_data import InputData
 from utils import remap_labels, to_categorical, save_output, save_model_summary
@@ -29,7 +29,7 @@ __author__ = 'Ken C. L. Wong'
 
 
 def training(
-        model: Model,
+        model,
         input_data: InputData,
         output_dir,
         label_mapping=None,
@@ -79,10 +79,24 @@ def training(
     if is_plot_model:
         plot_model(model, show_shapes=True, show_layer_names=True, to_file=join(output_dir, 'model.pdf'))
 
-    train_flow = input_data.get_train_flow(shuffle=True, seed=np.random.randint(0, 10000))
+    train_flow = input_data.get_train_flow()
     valid_flow = input_data.get_valid_flow()
 
     num_labels = model.output_shape[-1]
+
+    @tf.function
+    def train_step(x, y):
+        with tf.GradientTape() as tape:
+            y_pred = model(x, training=True)
+            loss = model.loss(y, y_pred)
+        grads = tape.gradient(loss, model.trainable_weights)
+        model.optimizer.apply(grads, model.trainable_weights)
+        return loss
+
+    @tf.function
+    def test_step(x, y):
+        y_pred = model(x, training=False)
+        return model.loss(y, y_pred)
 
     if is_print:
         print('Training started')
@@ -101,20 +115,12 @@ def training(
         # Training phase
 
         train_loss_epoch = []
-        n_batches = 0
-        for x, y in train_flow:
+        for x, y in train_flow.get_numpy_iterator():  # This iterator only works for this loop
             if label_mapping is not None:
                 y = remap_labels(y, label_mapping)
-            assert y.shape[-1] == 1, 'Can only handle single label per pixel.'
-            y = to_categorical(y[..., 0], num_labels)
-
-            loss = model.train_on_batch(x, y)
-            train_loss_epoch.append(loss)
-
-            n_batches += 1
-            if n_batches == train_num_batches:
-                break
-
+            y = to_categorical(y, num_labels)
+            loss = train_step(x, y)
+            train_loss_epoch.append(float(loss))
         train_loss.append(np.mean(train_loss_epoch))
 
         if is_print:
@@ -130,20 +136,12 @@ def training(
         # Validation phase
 
         valid_loss_epoch = []
-        n_batches = 0
-        for x, y in valid_flow:
+        for x, y in valid_flow.get_numpy_iterator():  # This iterator only works for this loop
             if label_mapping is not None:
                 y = remap_labels(y, label_mapping)
-            assert y.shape[-1] == 1, 'Can only handle single label per pixel.'
-            y = to_categorical(y[..., 0], num_labels)
-
-            loss = model.test_on_batch(x, y)
-            valid_loss_epoch.append(loss)
-
-            n_batches += 1
-            if n_batches == valid_num_batches:
-                break
-
+            y = to_categorical(y, num_labels)
+            loss = test_step(x, y)
+            valid_loss_epoch.append(float(loss))
         valid_loss.append(np.mean(valid_loss_epoch))
 
         if is_print:
@@ -157,17 +155,15 @@ def training(
             best_epoch = epoch
             best_weights = model.get_weights()
             if is_save_model:
-                save_model(model, join(output_dir, 'model', 'model.h5'))
+                save_model(model, join(output_dir, 'model', 'model.keras'))
 
     end_time = time.time()
-
-    input_data.stop_enqueuers()
 
     if best_weights is not None:
         model.set_weights(best_weights)
     else:  # num_epochs == 0, i.e., no training
         if is_save_model:
-            save_model(model, join(output_dir, 'model', 'model.h5'))
+            save_model(model, join(output_dir, 'model', 'model.keras'))
 
     # Plot losses
     start_epoch = int(num_epochs * plot_epoch_portion) if plot_epoch_portion is not None else 0
@@ -217,7 +213,7 @@ def plot_losses(num_epochs, start_epoch, losses, styles, labels, output_file):
 
 
 def testing(
-        model: Model,
+        model,
         input_data: InputData,
         output_dir,
         label_mapping=None,
@@ -250,6 +246,10 @@ def testing(
 
     test_flow = input_data.get_test_flow()
 
+    @tf.function
+    def test_step(x):
+        return model(x, training=False)
+
     if is_print:
         print('Testing started')
 
@@ -258,28 +258,21 @@ def testing(
     predict_times = []
     y_true = []
     y_pred = []
-    n_batches = 0
-    for xy in test_flow:
-        if isinstance(xy, (tuple, list)):
+    for xy in test_flow.get_numpy_iterator():  # xy is always a tuple because of PyDatasetAdapter
+        if len(xy) == 2:
             x, y = xy
             y_true.append(np.asarray(y, dtype=np.int16)[..., 0])  # Last dimension of size 1 is ignored
         else:
-            x = xy
+            x = xy[0]
 
         s_time = time.time()
-        yp = model.predict_on_batch(x)
+        yp = test_step(x).numpy()
         e_time = time.time()
-        if n_batches != 0:
+        if y_pred:  # Skip the first iteration which involves model initialization
             predict_times.append(e_time - s_time)
         y_pred.append(yp)
 
-        n_batches += 1
-        if n_batches == test_num_batches:
-            break
-
     end_time = time.time()
-
-    input_data.stop_enqueuers()
 
     y_true = np.concatenate(y_true) if y_true else None
     y_pred = np.concatenate(y_pred)
@@ -292,7 +285,7 @@ def testing(
     if save_image:
         for i, y in enumerate(y_pred):
             save_output(y, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_pred')
-        if y_true.size:
+        if y_true is not None:
             for i, y in enumerate(y_true):
                 save_output(y, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_true')
 
@@ -464,6 +457,6 @@ def save_model(model, output_path):
     os.makedirs(dirname, exist_ok=True)
 
     if os.path.exists(output_path):
-        os.remove(output_path)  # To avoid occasional h5py crashing when overwriting
+        os.remove(output_path)  # To avoid occasional crashing when overwriting
 
-    model.save(str(output_path))  # h5py compares with str while output_dir is unicode
+    model.save(str(output_path))
