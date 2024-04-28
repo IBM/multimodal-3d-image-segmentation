@@ -8,9 +8,8 @@
 Author: Ken C. L. Wong
 """
 
-from tensorflow.keras.layers import Cropping2D, ZeroPadding2D, Cropping3D, ZeroPadding3D
-from tensorflow.keras import backend
-from tensorflow.keras import initializers, regularizers, constraints, losses
+from keras.layers import Cropping2D, ZeroPadding2D, Cropping3D, ZeroPadding3D
+from keras import initializers, regularizers, constraints, losses
 
 import numpy as np
 from typing import List, Tuple, Union
@@ -29,7 +28,8 @@ def spatial_padcrop(x, target_shape):
     Returns:
         A reshaped tensor.
     """
-    ndim = backend.ndim(x)
+    ndim = x.ndim
+    assert ndim in (3, 4, 5) and ndim == len(target_shape) + 2
     padding, cropping = get_spatial_padcrop(x, target_shape)
 
     if np.sum(padding) != 0:
@@ -45,7 +45,6 @@ def spatial_padcrop(x, target_shape):
 
 def get_spatial_padcrop(x, target_shape):
     """Computes the amount needed to be padded and cropped.
-    Returned values can be used by Keras layers or backend functions.
 
     Args:
         x: The tensor to be reshaped.
@@ -54,9 +53,7 @@ def get_spatial_padcrop(x, target_shape):
     Returns:
         The padding and cropping lists.
     """
-    if len(target_shape) == backend.ndim(x):
-        target_shape = np.array(target_shape[1:-1])
-    shape = np.array(backend.int_shape(x)[1:-1])
+    shape = np.array(tuple(x.shape[1:-1]))
 
     ndim = len(shape)
     zeros = (0, 0)  # Lower and upper
@@ -94,7 +91,7 @@ def get_loss(loss, loss_args: Union[dict, Tuple[dict], List[dict]] = None, custo
     This is needed to process custom losses.
 
     Args:
-        loss: Loss function(s). Can be a str, function, or a list of them.
+        loss: Loss function(s). Can be a str, class, function, or a list of them.
         loss_args: Optional loss function arguments.
             If it is a list, each element is only used if it is a dict.
         custom_objects: Custom objects.
@@ -113,12 +110,14 @@ def get_loss(loss, loss_args: Union[dict, Tuple[dict], List[dict]] = None, custo
     for i, ls in enumerate(loss):
         if loss_args is not None and isinstance(loss_args[i], dict):
             ls_args = loss_args[i]
-            if callable(ls):
-                ls = ls(**ls_args)
-            elif isinstance(ls, str):
-                ls = {'class_name': ls, 'config': ls_args}
-            else:
-                raise ValueError(f'{ls} is not a valid loss function.')
+        else:
+            ls_args = {}
+
+        if ls.__class__ == type:  # If it is a class
+            ls = ls(**ls_args)
+        elif isinstance(ls, str):
+            ls = {'class_name': ls, 'config': ls_args}
+
         loss_fns.append(get_single_loss(ls, custom_objects))
 
     if len(loss_fns) == 1:
