@@ -19,7 +19,6 @@ from keras.layers import GroupNormalization
 
 from nets.nets_utils import spatial_padcrop, get_loss
 from nets.custom_objects import custom_objects
-from nets.custom_losses import CombineLosses
 from nets.fourier_operator import FourierOperator
 from nets.hartley_operator import HartleyOperator
 from nets.hartley_mha import HartleyMultiHeadAttention
@@ -102,8 +101,6 @@ class VNetDS:
         self.right_leg = dict()
 
         self.loss = get_loss(loss, loss_args, custom_objects)
-        if isinstance(self.loss, (list, tuple)):
-            self.loss = CombineLosses(self.loss, loss_weights)
 
         ndim = len(self.image_size)
         self.conv = Conv2D if ndim == 2 else Conv3D
@@ -280,8 +277,6 @@ class NeuralOperatorSeg:
         self.kernel_initializer = kernel_initializer
 
         self.loss = get_loss(loss, loss_args, custom_objects)
-        if isinstance(self.loss, (list, tuple)):
-            self.loss = CombineLosses(self.loss, loss_weights)
 
         assert self.transform_type in ['Fourier', 'Hartley']
         if self.merge_method is not None:
@@ -439,8 +434,6 @@ class HartleyMHASeg:
         self.kernel_initializer = kernel_initializer
 
         self.loss = get_loss(loss, loss_args, custom_objects)
-        if isinstance(self.loss, (list, tuple)):
-            self.loss = CombineLosses(self.loss, loss_weights)
 
         if self.merge_method is not None:
             assert self.merge_method in ['add', 'concat']
