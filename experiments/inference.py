@@ -110,8 +110,8 @@ def inference(
     test_num_batches = input_data.get_test_num_batches()
 
     @tf.function
-    def test_step(x):
-        return model(x, training=False)
+    def test_step(inputs):
+        return model(inputs, training=False)
 
     print('test_num_batches:', test_num_batches)
     print()
