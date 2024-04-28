@@ -11,17 +11,17 @@ Author: Ken C. L. Wong
 import copy
 import sys
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # noqa: E402
 import numpy as np
 from functools import partial
 
 import tensorflow as tf
-tf.compat.v1.disable_eager_execution()  # Run faster without memory leak
-from tensorflow.keras import optimizers
-from tensorflow.keras.models import load_model
-from tensorflow.keras.optimizers import schedules
+# tf.compat.v1.disable_eager_execution()  # noqa: E402 Run faster without memory leak
+from keras import optimizers
+from keras.models import load_model
+from keras.optimizers import schedules
 
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))  # noqa: E402
 from data_io.input_data import InputData
 import nets
 from nets.custom_objects import custom_objects
@@ -130,19 +130,20 @@ def run(config_args):
     data_lists_test = get_data_lists(input_lists.get('data_lists_test_paths'), data_dir)
 
     input_args = copy.deepcopy(config_args['input_args'])
-    input_args['reader'] = read_img
     if input_args.pop('use_data_normalization', True):
         x_processing = partial(normalize_modalities, mask_val=0)  # Assume background value of 0
     else:
         x_processing = None
 
     input_data = None
-    generator_kwargs = config_args.get('augmentation')
+    transform_kwargs = config_args.get('augmentation')
     if config_args['main']['is_train'] or config_args['main']['is_test']:
-        input_data = InputData(data_lists_train=data_lists_train, data_lists_valid=data_lists_valid,
+        input_data = InputData(reader=read_img,
+                               data_lists_train=data_lists_train,
+                               data_lists_valid=data_lists_valid,
                                data_lists_test=data_lists_test,
                                x_processing=x_processing,
-                               generator_kwargs=generator_kwargs,
+                               transform_kwargs=transform_kwargs,
                                **input_args)
 
     #
@@ -181,7 +182,7 @@ def run(config_args):
         model = training(**train_args)
 
     elif config_args['main']['is_test']:
-        model_path = os.path.join(output_dir, 'model/model.h5')
+        model_path = os.path.join(output_dir, 'model/model.keras')
         model = load_model(model_path, custom_objects=custom_objects)
 
         # If testing image size is different from the model's
