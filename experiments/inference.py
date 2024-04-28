@@ -11,16 +11,15 @@ Author: Ken C. L. Wong
 import copy
 import sys
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # noqa: E402
 import numpy as np
 import time
 from functools import partial
 
 import tensorflow as tf
-tf.compat.v1.disable_eager_execution()  # Run faster without memory leak
-from tensorflow.keras.models import load_model, Model
+from keras.models import load_model
 
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))  # noqa: E402
 from data_io.input_data import InputData
 import nets
 from nets.custom_objects import custom_objects
@@ -52,18 +51,20 @@ def run(config_args):
     data_lists_test = get_data_lists(input_lists.get('data_lists_test_paths'), data_dir)
 
     input_args = copy.deepcopy(config_args['input_args'])
-    input_args['reader'] = read_img
     if input_args.pop('use_data_normalization', True):
         x_processing = partial(normalize_modalities, mask_val=0)  # Assume background value of 0
     else:
         x_processing = None
 
-    input_data = InputData(data_lists_test=data_lists_test, x_processing=x_processing, **input_args)
+    input_data = InputData(reader=read_img,
+                           data_lists_test=data_lists_test,
+                           x_processing=x_processing,
+                           **input_args)
 
     #
     # Load trained model
 
-    model_path = os.path.join(target_dir, 'model/model.h5')
+    model_path = os.path.join(target_dir, 'model/model.keras')
     model = load_model(model_path, custom_objects=custom_objects)
 
     # If testing image size is different from the model's,
@@ -91,7 +92,7 @@ def run(config_args):
 
 
 def inference(
-        model: Model,
+        model,
         input_data: InputData,
         output_dir,
         label_mapping=None,
@@ -108,6 +109,10 @@ def inference(
     """
     test_num_batches = input_data.get_test_num_batches()
 
+    @tf.function
+    def test_step(x):
+        return model(x, training=False)
+
     print('test_num_batches:', test_num_batches)
     print()
     print('Testing started')
@@ -118,27 +123,23 @@ def inference(
 
     predict_times = []
     data_lists_test = input_data.data_lists_test
-    n_batches = 0
-    for x in input_data.get_test_flow():
+    for i, x in enumerate(input_data.get_test_flow().get_numpy_iterator()):
+        x = x[0]  # x is always a tuple because of PyDatasetAdapter
+
         s_time = time.time()
-        y_pred = model.predict_on_batch(x)
+        y_pred = test_step(x).numpy()
         e_time = time.time()
-        if n_batches != 0:
+
+        if i != 0:
             predict_times.append(e_time - s_time)
 
         y_pred = y_pred.argmax(-1).astype(np.int16)[0]
         if label_mapping is not None:
             y_pred = remap_labels(y_pred, label_mapping)
 
-        save_output(y_pred, data_lists_test, n_batches, output_dir, output_origin)
-
-        n_batches += 1
-        if n_batches == test_num_batches:
-            break
+        save_output(y_pred, data_lists_test, i, output_dir, output_origin)
 
     end_time = time.time()
-
-    input_data.stop_enqueuers()
 
     print()
     print(output_dir)
