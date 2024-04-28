@@ -67,13 +67,14 @@ def to_categorical(y, num_classes=None):
     """Converts an int label tensor to one-hot.
 
     Args:
-        y: Input label tensor, which is flattened when used.
+        y: Input label tensor with shape (B, D, H, W, 1).
         num_classes: Number of classes.
 
     Returns:
-        A one-hot tensor of y with shape (input_shape, num_classes).
+        A one-hot tensor of y with shape (B, D, H, W, num_classes).
     """
-    y = np.asarray(y, dtype=int)
+    assert y.shape[-1] == 1, 'Can only handle single label per pixel.'
+    y = np.asarray(y, dtype=int)[..., 0]
     input_shape = y.shape
     y = y.ravel()
     if not num_classes:
@@ -167,29 +168,6 @@ def save_config(config_args, output_dir):
         f.write(config_args['config'].getvalue())
 
 
-def load_np_data(file_path, allow_pickle=False):
-    """Loads data from a single-array npy or npz file.
-
-    Args:
-        file_path: A full file path to a npy or npz file.
-        allow_pickle : bool, optional
-            Allow loading pickled object arrays stored in npy files. Reasons for
-            disallowing pickles include security, as loading pickled data can
-            execute arbitrary code. If pickles are disallowed, loading object
-            arrays will fail (default: False).
-
-    Returns:
-        Loaded data.
-    """
-    if file_path is not None:
-        data = np.load(file_path, allow_pickle=allow_pickle)
-        if isinstance(data, np.lib.npyio.NpzFile):
-            data = data[data.files[0]]
-        return data
-    else:
-        return None
-
-
 def get_data_lists(data_lists_paths, data_dir=None):
     """Creates a multimodal data list for file reading.
 
@@ -251,4 +229,4 @@ def read_img(filename):
         A Numpy array of the image.
     """
     img = sitk.ReadImage(filename)
-    return sitk.GetArrayFromImage(img)
+    return sitk.GetArrayFromImage(img).astype(np.float32)
