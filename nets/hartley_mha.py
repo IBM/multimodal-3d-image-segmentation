@@ -4,11 +4,10 @@
 #
 
 import tensorflow as tf
-from tensorflow.keras.layers import Layer, InputSpec
-from tensorflow.keras import constraints
-from tensorflow.keras import initializers
-from tensorflow.keras import regularizers
-from tensorflow.keras import backend
+from keras.layers import Layer, InputSpec
+from keras import constraints
+from keras import initializers
+from keras import regularizers
 
 import numpy as np
 
@@ -77,23 +76,23 @@ class HartleyMultiHeadAttention(Layer):
         self.bias_constraint = constraints.get(bias_constraint)
 
         self.kernel_query = None
-        self.kernel_value = None
         self.kernel_key = None
+        self.kernel_value = None
         self.kernel_out = None
 
         self.bias_query = None
-        self.bias_value = None
         self.bias_key = None
+        self.bias_value = None
         self.bias_out = None
 
     def build(self, input_shape):
-        if isinstance(input_shape, tf.TensorShape):  # Single input
-            query_shape = value_shape = key_shape = input_shape
+        if not isinstance(input_shape[0], (tuple, tf.TensorShape)):  # Single input
+            query_shape = key_shape = value_shape = input_shape
         elif len(input_shape) == 2:
             query_shape = input_shape[0]
-            value_shape = key_shape = input_shape[1]
+            key_shape = value_shape = input_shape[1]
         elif len(input_shape) == 3:
-            query_shape, value_shape, key_shape = input_shape
+            query_shape, key_shape, value_shape = input_shape
         else:
             raise ValueError('Invalid inputs.')
 
@@ -123,16 +122,16 @@ class HartleyMultiHeadAttention(Layer):
             regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint)
 
-        self.kernel_value = self.add_weight(
-            name='kernel_value',
-            shape=(value_shape[-1], self.value_dim, self.num_heads),
+        self.kernel_key = self.add_weight(
+            name='kernel_key',
+            shape=(key_shape[-1], self.key_dim, self.num_heads),
             initializer=self.kernel_initializer,
             regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint)
 
-        self.kernel_key = self.add_weight(
-            name='kernel_key',
-            shape=(key_shape[-1], self.key_dim, self.num_heads),
+        self.kernel_value = self.add_weight(
+            name='kernel_value',
+            shape=(value_shape[-1], self.value_dim, self.num_heads),
             initializer=self.kernel_initializer,
             regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint)
@@ -152,16 +151,16 @@ class HartleyMultiHeadAttention(Layer):
                 regularizer=self.bias_regularizer,
                 constraint=self.bias_constraint)
 
-            self.bias_value = self.add_weight(
-                name='bias_value',
-                shape=(self.value_dim, self.num_heads) + (1,) * (ndim - 2),
+            self.bias_key = self.add_weight(
+                name='bias_key',
+                shape=(self.key_dim, self.num_heads) + (1,) * (ndim - 2),
                 initializer=self.bias_initializer,
                 regularizer=self.bias_regularizer,
                 constraint=self.bias_constraint)
 
-            self.bias_key = self.add_weight(
-                name='bias_key',
-                shape=(self.key_dim, self.num_heads) + (1,) * (ndim - 2),
+            self.bias_value = self.add_weight(
+                name='bias_value',
+                shape=(self.value_dim, self.num_heads) + (1,) * (ndim - 2),
                 initializer=self.bias_initializer,
                 regularizer=self.bias_regularizer,
                 constraint=self.bias_constraint)
@@ -176,58 +175,60 @@ class HartleyMultiHeadAttention(Layer):
         self.input_spec = InputSpec(ndim=ndim)
         self.built = True
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs):
         if not isinstance(inputs, (tuple, list)):  # Single input
-            query = value = key = inputs
+            query = key = value = self.dht(inputs)  # (B, C, spatial)
         elif len(inputs) == 2:
-            query = inputs[0]
-            value = key = inputs[1]
+            query = self.dht(inputs[0])
+            key = value = self.dht(inputs[1])
         elif len(inputs) == 3:
-            query, value, key = inputs
+            query = self.dht(inputs[0])
+            key = self.dht(inputs[1])
+            value = self.dht(inputs[2])
         else:
             raise ValueError('Invalid inputs.')
 
-        ndim = backend.ndim(query)  # Input ndim
-        spatial_shape = backend.int_shape(query)[1:-1]  # Input spatial shape
+        ndim = query.ndim  # Input ndim
+        spatial_shape = tuple(query.shape[2:])  # Input spatial shape
 
         if ndim == 4:
             query = self._freq_conv2d(self.kernel_query, query)  # (B, C, HEADS, H, W)
-            value = self._freq_conv2d(self.kernel_value, value)
             key = self._freq_conv2d(self.kernel_key, key)
+            value = self._freq_conv2d(self.kernel_value, value)
         else:
             query = self._freq_conv3d(self.kernel_query, query)  # (B, C, HEADS, D, H, W)
-            value = self._freq_conv3d(self.kernel_value, value)
             key = self._freq_conv3d(self.kernel_key, key)
+            value = self._freq_conv3d(self.kernel_value, value)
 
         if self.use_bias:
             query = query + self.bias_query
-            value = value + self.bias_value
             key = key + self.bias_key
+            value = value + self.bias_value
 
         # Dimension reduction by grouping, (B, C * prod(patch_size), HEADS, num_d, num_h, num_w)
         if ndim == 4:
             query = grouping2d(query, self.patch_size)
-            value = grouping2d(value, self.patch_size)
             key = grouping2d(key, self.patch_size)
+            value = grouping2d(value, self.patch_size)
         else:
             query = grouping3d(query, self.patch_size)
-            value = grouping3d(value, self.patch_size)
             key = grouping3d(key, self.patch_size)
+            value = grouping3d(value, self.patch_size)
 
-        spatial_shape_freq = backend.int_shape(query)[3:]  # Spatial shape before flattening
+        spatial_shape_freq = tuple(query.shape[3:])  # Spatial shape before flattening
 
         query = self._spatial_flatten(query)  # (B, C * prod(patch_size), HEADS, num_d * num_h * num_w)
-        value = self._spatial_flatten(value)
         key = self._spatial_flatten(key)
+        value = self._spatial_flatten(value)
 
         att = tf.einsum('bchq,bchk->bhqk', query, key)
-        att = att / tf.sqrt(float(backend.int_shape(key)[1]))
+        att = att / tf.sqrt(float(key.shape[1]))
         if self.attention_activation is not None:
             activation = getattr(tf.nn, self.attention_activation)
             att = activation(att)
 
         output = tf.einsum('bhqk,bchk->bchq', att, value)
-        output = tf.reshape(output, (-1,) + backend.int_shape(output)[1:3] + spatial_shape_freq)
+        output = tf.reshape(output, (-1,) + tuple(output.shape[1:3]) + spatial_shape_freq)
 
         # Get back the original spatial shape of query, (B, C, HEADS, D, H, W)
         if ndim == 4:
@@ -235,7 +236,7 @@ class HartleyMultiHeadAttention(Layer):
         else:
             output = ungrouping3d(output, self.value_dim, self.patch_size)
 
-        shape = backend.int_shape(output)
+        shape = tuple(output.shape)
         output = tf.reshape(output, (-1,) + (shape[1] * shape[2],) + shape[3:])
 
         equation = 'io,bihw->bohw' if ndim == 4 else 'io,bidhw->bodhw'
@@ -247,14 +248,18 @@ class HartleyMultiHeadAttention(Layer):
 
         return output
 
-    def _freq_conv2d(self, kernel, x):
+    @staticmethod
+    def dht(x):
         # Convert to channel-first as dht(fft) only works on the innermost dimensions
-        ndim = backend.ndim(x)
-        perm = [0, ndim - 1] + list(range(1, ndim - 1))  # (b, c, spatial)
+        ndim = x.ndim
+        perm = [0, ndim - 1] + list(range(1, ndim - 1))  # (B, C, spatial)
         x = tf.transpose(x, perm=perm)
 
-        x = dht2d(x)
+        if ndim == 4:
+            return dht2d(x)
+        return dht3d(x)
 
+    def _freq_conv2d(self, kernel, x):
         equation = 'ioz,bihw->bozhw'  # z: heads
         modes_0, modes_1 = self.num_modes
 
@@ -268,13 +273,6 @@ class HartleyMultiHeadAttention(Layer):
         return tf.concat([low, high], axis=-2)
 
     def _freq_conv3d(self, kernel, x):
-        # Convert to channel-first as dht(fft) only works on the innermost dimensions
-        ndim = backend.ndim(x)
-        perm = [0, ndim - 1] + list(range(1, ndim - 1))  # (b, c, spatial)
-        x = tf.transpose(x, perm=perm)
-
-        x = dht3d(x)
-
         equation = 'ioz,bidhw->bozdhw'  # z: heads
         modes_0, modes_1, modes_2 = self.num_modes
 
@@ -373,7 +371,7 @@ class HartleyMultiHeadAttention(Layer):
 
     @staticmethod
     def _spatial_flatten(x, has_batch_axis=True):
-        in_shape = backend.int_shape(x)
+        in_shape = tuple(x.shape)
         if has_batch_axis:
             shape = (-1,) + in_shape[1:3] + (np.prod(in_shape[3:]),)
         else:
@@ -414,7 +412,7 @@ def grouping2d(x, patch_size):
     assert len(patch_size) == 2
 
     patch_h, patch_w = patch_size
-    _, c, z, h, w = backend.int_shape(x)  # Channel first in frequency domain, z is num_heads
+    _, c, z, h, w = x.shape  # Channel first in frequency domain, z is num_heads
 
     assert h % patch_h == 0 and w % patch_w == 0
     num_h = h // patch_h
@@ -445,7 +443,7 @@ def ungrouping2d(x, num_channels, patch_size):
 
     patch_h, patch_w = patch_size
     c = num_channels
-    z, num_h, num_w = backend.int_shape(x)[2:]
+    z, num_h, num_w = x.shape[2:]
 
     x = tf.reshape(x, (-1, c, patch_h, patch_w, z, num_h, num_w))
     x = tf.transpose(x, (0, 1, 4, 5, 2, 6, 3))
@@ -468,7 +466,7 @@ def grouping3d(x, patch_size):
     assert len(patch_size) == 3
 
     patch_d, patch_h, patch_w = patch_size
-    _, c, z, d, h, w = backend.int_shape(x)  # Channel first in frequency domain, z is num_heads
+    _, c, z, d, h, w = x.shape  # Channel first in frequency domain, z is num_heads
 
     assert d % patch_d == 0 and h % patch_h == 0 and w % patch_w == 0
     num_d = d // patch_d
@@ -501,7 +499,7 @@ def ungrouping3d(x, num_channels, patch_size):
 
     patch_d, patch_h, patch_w = patch_size
     c = num_channels
-    z, num_d, num_h, num_w = backend.int_shape(x)[2:]
+    z, num_d, num_h, num_w = x.shape[2:]
 
     x = tf.reshape(x, (-1, c, patch_d, patch_h, patch_w, z, num_d, num_h, num_w))
     x = tf.transpose(x, (0, 1, 5, 6, 2, 7, 3, 8, 4))
