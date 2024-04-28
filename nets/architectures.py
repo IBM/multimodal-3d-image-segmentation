@@ -55,7 +55,6 @@ class VNetDS:
         loss: Loss function(s). Can be a str, a callable, or a list of them (default: 'PCCLoss').
         loss_args: Optional loss function arguments.
             If it is a list, each element is only used if it is a dict (default: None).
-        loss_weights: For weighted sum of loss functions (default: None).
         kernel_initializer: Kernel initializer of convolutional layers (default: 'glorot_uniform').
         use_residual: If True (default), residual connections are used.
     """
@@ -74,7 +73,6 @@ class VNetDS:
             output_activation='softmax',
             loss='PCCLoss',
             loss_args=None,
-            loss_weights=None,
             kernel_initializer='glorot_uniform',
             use_residual=True,
     ):
@@ -237,7 +235,6 @@ class NeuralOperatorSeg:
         loss: Loss function(s). Can be a str, a callable, or a list of them (default: 'PCCLoss').
         loss_args: Optional loss function arguments.
             If it is a list, each element is only used if it is a dict (default: None).
-        loss_weights: For weighted sum of loss functions (default: None).
     """
     def __init__(
             self,
@@ -258,7 +255,6 @@ class NeuralOperatorSeg:
             kernel_initializer='glorot_uniform',
             loss='PCCLoss',
             loss_args=None,
-            loss_weights=None,
     ):
         self.image_size = image_size
         self.num_input_channels = num_input_channels
@@ -392,7 +388,6 @@ class HartleyMHASeg:
         loss: Loss function(s). Can be a str, a callable, or a list of them (default: 'PCCLoss').
         loss_args: Optional loss function arguments.
             If it is a list, each element is only used if it is a dict (default: None).
-        loss_weights: For weighted sum of loss functions (default: None).
     """
     def __init__(
             self,
@@ -414,7 +409,6 @@ class HartleyMHASeg:
             kernel_initializer='glorot_uniform',
             loss='PCCLoss',
             loss_args=None,
-            loss_weights=None,
     ):
         self.image_size = image_size
         self.num_input_channels = num_input_channels
