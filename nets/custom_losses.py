@@ -8,9 +8,8 @@
 Author: Ken C. L. Wong
 """
 
-from tensorflow.python.keras.losses import LossFunctionWrapper
-from tensorflow.python.keras.utils import losses_utils
-from tensorflow.keras import backend
+from keras.src.losses.losses import LossFunctionWrapper, Loss
+import tensorflow as tf
 
 __author__ = 'Ken C. L. Wong'
 
@@ -25,19 +24,19 @@ def corrcoef(y_true, y_pred):
     Returns:
         Pearson's correlation coefficients with shape (batch_size, num_labels).
     """
-    ndim = backend.ndim(y_true)
+    ndim = y_true.ndim
     axis = list(range(ndim))[1:-1]  # Spatial dimensions
 
     assert ndim in [3, 4, 5]
 
-    y_true = y_true - backend.mean(y_true, axis=axis, keepdims=True)
-    y_pred = y_pred - backend.mean(y_pred, axis=axis, keepdims=True)
+    y_true = y_true - tf.reduce_mean(y_true, axis=axis, keepdims=True)
+    y_pred = y_pred - tf.reduce_mean(y_pred, axis=axis, keepdims=True)
 
-    tp = backend.sum(y_true * y_pred, axis=axis)
-    tt = backend.sum(backend.square(y_true), axis=axis)
-    pp = backend.sum(backend.square(y_pred), axis=axis)
+    tp = tf.reduce_sum(y_true * y_pred, axis=axis)
+    tt = tf.reduce_sum(tf.square(y_true), axis=axis)
+    pp = tf.reduce_sum(tf.square(y_pred), axis=axis)
 
-    output = tp / backend.sqrt(tt * pp + backend.epsilon())
+    output = tp / tf.sqrt(tt * pp + 1e-7)
 
     return output
 
@@ -60,7 +59,7 @@ def pcc_loss(y_true, y_pred):
     output = corrcoef(y_true, y_pred)  # (-1, 1)
     output = (output + 1) * 0.5  # (0, 1)
     output = 1 - output
-    return backend.mean(output, axis=-1)
+    return tf.reduce_mean(output, axis=-1)
 
 
 class PCCLoss(LossFunctionWrapper):
@@ -72,17 +71,22 @@ class PCCLoss(LossFunctionWrapper):
     https://doi.org/10.1007/978-3-031-21014-3_6
 
     Args:
-        reduction: Type of `tf.keras.losses.Reduction` to apply to loss. Default value is `AUTO`.
+        reduction: Type of reduction to apply to the loss. In almost all cases
+            this should be `"sum_over_batch_size"`.
+            Supported options are `"sum"`, `"sum_over_batch_size"` or `None`.
         name: Optional name for the instance.
     """
     def __init__(self,
-                 reduction=losses_utils.ReductionV2.AUTO,
+                 reduction='sum_over_batch_size',
                  name='pcc_loss'):
         super().__init__(
             pcc_loss,
             name=name,
             reduction=reduction
         )
+
+    def get_config(self):
+        return Loss.get_config(self)
 
 
 def dice_coef(y_true, y_pred):
@@ -95,14 +99,14 @@ def dice_coef(y_true, y_pred):
     Returns:
         The (soft) Dice coefficients with shape (batch_size, num_labels).
     """
-    ndim = backend.ndim(y_true)
+    ndim = y_true.ndim
     axis = list(range(ndim))[1:-1]  # Spatial dimensions
 
     assert ndim in [3, 4, 5]
 
-    intersection = backend.sum(y_true * y_pred, axis=axis)
-    union = backend.sum(y_true + y_pred, axis=axis)
-    return 2. * intersection / (union + backend.epsilon())
+    intersection = tf.reduce_sum(y_true * y_pred, axis=axis)
+    union = tf.reduce_sum(y_true + y_pred, axis=axis)
+    return 2. * intersection / (union + 1e-7)
 
 
 def dice_loss(y_true, y_pred):
@@ -117,18 +121,20 @@ def dice_loss(y_true, y_pred):
     """
     output = dice_coef(y_true, y_pred)
     output = 1 - output
-    return backend.mean(output, axis=-1)
+    return tf.reduce_mean(output, axis=-1)
 
 
 class DiceLoss(LossFunctionWrapper):
     """Dice loss.
 
     Args:
-        reduction: Type of `tf.keras.losses.Reduction` to apply to loss. Default value is `AUTO`.
+        reduction: Type of reduction to apply to the loss. In almost all cases
+            this should be `"sum_over_batch_size"`.
+            Supported options are `"sum"`, `"sum_over_batch_size"` or `None`.
         name: Optional name for the instance.
     """
     def __init__(self,
-                 reduction=losses_utils.ReductionV2.AUTO,
+                 reduction='sum_over_batch_size',
                  name='dice_loss'):
         super().__init__(
             dice_loss,
@@ -136,52 +142,5 @@ class DiceLoss(LossFunctionWrapper):
             reduction=reduction
         )
 
-
-def combine_losses(y_true, y_pred, losses, loss_weights=None):
-    """Combines multiple losses into one.
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Prediction scores.
-        losses: A list of callable loss functions.
-        loss_weights: A list of weights.
-
-    Returns:
-        A combined loss.
-    """
-    assert isinstance(losses, (list, tuple))
-
-    loss_vals = [backend.mean(ls(y_true, y_pred)) for ls in losses]
-
-    output = 0
-    if loss_weights is not None:
-        for val, weight in zip(loss_vals, loss_weights):
-            output += weight * val
-    else:
-        for val in loss_vals:
-            output += val
-
-    return output
-
-
-class CombineLosses(LossFunctionWrapper):
-    """Combines multiple losses into one.
-
-    Args:
-        losses: A list of callable loss functions.
-        loss_weights: A list of weights.
-        reduction: Type of `tf.keras.losses.Reduction` to apply to loss. Default value is `AUTO`.
-        name: Optional name for the instance.
-    """
-    def __init__(self,
-                 losses,
-                 loss_weights=None,
-                 reduction=losses_utils.ReductionV2.AUTO,
-                 name='combine_losses'):
-        super().__init__(
-            combine_losses,
-            name=name,
-            reduction=reduction,
-            losses=losses,
-            loss_weights=loss_weights
-        )
+    def get_config(self):
+        return Loss.get_config(self)
