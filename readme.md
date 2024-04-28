@@ -56,7 +56,7 @@ This repository contains our proposed image segmentation frameworks applicable t
    
 ## Technical Details
 
-The code is developed with Python 3.6.9 and Keras in TensorFlow 2.6.2, and the "channel-last" format is assumed. If you are only interested in the architectures, the `nets` module is all you need, though the hyperparameters are stored under [experiments/config_files](experiments/config_files) as they are dataset specific. The experimental setups such as data splits and training procedure are in the `experiments` module. The `nets` module is dataset independent, while some functions in the `experiments` module (e.g., dataset partitioning) are written exclusively for BraTS'19.
+The code is developed with Python 3.10.12 and Keras in TensorFlow 2.16.1, and the "channel-last" format is assumed. If you are only interested in the architectures, the `nets` module is all you need, though the hyperparameters are stored under [experiments/config_files](experiments/config_files) as they are dataset specific. The experimental setups such as data splits and training procedure are in the `experiments` module. The `nets` module is dataset independent, while some functions in the `experiments` module (e.g., dataset partitioning) are written exclusively for BraTS'19.
 
 In experiments, parameters or arguments are provided through a config file using the Python's module `ConfigParser`. The config file is saved to the output directory for future reference. Examples of the config files used in our experiments are provided under [experiments/config_files](experiments/config_files) for reproducibility.
 
@@ -80,9 +80,9 @@ There are multiple Python packages required to run the code. You can install the
 
 3. Install the required Python packages using:
    ```
-   pip install tensorflow natsort SimpleITK tensorflow_addons matplotlib pandas pydot
+   pip install tensorflow[and-cuda] natsort SimpleITK matplotlib pandas pydot
    ```
-   > **_Note:_** The Linux (not Python) library `graphviz` is required by the function `tensorflow.keras.utils.plot_model`. If you encounter the corresponding runtime error, you can either install `graphviz` by `sudo apt-get install graphviz` if you have sudo privileges, or set `is_plot_model = False` in the training config file to skip `plot_model`. Furthermore, the code is developed using TensorFlow 2.6.2. Different versions of TensorFlow 2 can be used but are not guaranteed to work.
+   > **_Note:_** The Linux (not Python) library `graphviz` is required by the function `keras.utils.plot_model`. If you encounter the corresponding runtime error, you can either install `graphviz` by `sudo apt-get install graphviz` if you have sudo privileges, or set `is_plot_model = False` in the training config file to skip `plot_model`.
 
 For more information on troubleshooting, see [Troubleshooting](troubleshooting.md).
 
@@ -117,6 +117,13 @@ where `<arch>` stands for an architecture (e.g., fnoseg). The segmentation resul
 ### Results Statistics
 
 We find that in the official validation results, the "enhancing tumor" (ET) region has sensitivity of NaN. We also find that `Hausdorff95_ET` = NaN when `Sensitivity_ET` = 1. These indicate that there may be no positives for ET for some cases. Therefore, when computing the means and variances for the ET region (e.g., `Dice_ET`, `Hausdorff95_ET`), those cases with `Sensitivity_ET` equals to NaN or 1 are ignored.
+
+## Updates
+
+### 2024-04
+
+1. Updated codes for the most recent version of TensorFlow (2.16.1).
+2. The `datagenerator.py` module is replaced by the `dataset.py` module that uses `PyDataset` in Keras 3. As `PyDataset` is new in Keras 3 and thus TensorFlow 2.16.1, class `InputData` is not backward compatible.
 
 ## Contact Information
 
