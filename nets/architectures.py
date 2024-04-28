@@ -11,12 +11,11 @@ Author: Ken C. L. Wong
 
 import numpy as np
 
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input
-from tensorflow.keras.layers import Conv2D, Conv2DTranspose, Conv3D, Conv3DTranspose
-from tensorflow.keras.layers import UpSampling2D, UpSampling3D, Concatenate, Add, Activation
-from tensorflow_addons.layers import GroupNormalization
-from tensorflow.keras import backend
+from keras.models import Model
+from keras.layers import Input
+from keras.layers import Conv2D, Conv2DTranspose, Conv3D, Conv3DTranspose
+from keras.layers import UpSampling2D, UpSampling3D, Concatenate, Add, Activation
+from keras.layers import GroupNormalization
 
 from nets.nets_utils import spatial_padcrop, get_loss
 from nets.custom_objects import custom_objects
@@ -164,7 +163,7 @@ class VNetDS:
         for i in reversed(range(num_sections - 1)):
             filters = self.base_num_filters * (2 ** i)
             x = self.conv_transpose_block(filters)(x)  # Upsampling
-            x = spatial_padcrop(x, backend.int_shape(self.encode_tensors[i]))  # Handle spatial shape difference
+            x = spatial_padcrop(x, tuple(self.encode_tensors[i].shape[1:-1]))  # Handle spatial shape difference
             x = Concatenate()([x, self.encode_tensors[i]])
 
             tmp = x if self.use_residual else None
@@ -538,16 +537,15 @@ def upsampling(tensors):
     Returns:
         A list of upsampled tensors.
     """
-    channels_first = backend.image_data_format() == 'channels_first'
     ref_tensor = tensors[0]  # Must be the tensor with the largest size
-    ref_size = backend.int_shape(ref_tensor)[2:] if channels_first else backend.int_shape(ref_tensor)[1:-1]
+    ref_size = tuple(ref_tensor.shape[1:-1])
 
     up = []
     for key in tensors:
         t = tensors[key]
-        t_sz = backend.int_shape(t)[2:] if channels_first else backend.int_shape(t)[1:-1]
+        t_sz = tuple(t.shape[1:-1])
         size = [int(np.round(sz / t_sz[i])) for i, sz in enumerate(ref_size)]
-        op = UpSampling2D if backend.ndim(ref_tensor) == 4 else UpSampling3D
+        op = UpSampling2D if ref_tensor.ndim == 4 else UpSampling3D
         up.append(spatial_padcrop(op(size=size)(t), ref_size))
 
     return up

@@ -4,12 +4,10 @@
 #
 
 import tensorflow as tf
-from tensorflow.keras.layers import Layer, InputSpec
-from tensorflow.keras import constraints
-from tensorflow.keras import initializers
-from tensorflow.keras import regularizers
-from tensorflow.keras import backend
-from tensorflow.python.ops import nn
+from keras.layers import Layer, InputSpec
+from keras import constraints
+from keras import initializers
+from keras import regularizers
 
 import numpy as np
 
@@ -107,21 +105,21 @@ class HartleyOperator(Layer):
                                     axes={channel_axis: num_input_channels})
         self.built = True
 
-    def call(self, inputs, **kwargs):
-        if backend.ndim(inputs) == 4:
+    def call(self, inputs):
+        if inputs.ndim == 4:
             x = self._call2d(inputs)
         else:
             x = self._call3d(inputs)
 
         if self.use_bias:
-            x = nn.bias_add(x, self.bias)
+            x = tf.nn.bias_add(x, self.bias)
 
         return x
 
     def _call2d(self, inputs):
-        s0, s1 = backend.int_shape(inputs)[1:-1]  # Spatial size
+        s0, s1 = inputs.shape[1:-1]  # Spatial size
         modes_0, modes_1 = self.num_modes
-        ndim = backend.ndim(inputs)
+        ndim = inputs.ndim
 
         assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1
 
@@ -175,9 +173,9 @@ class HartleyOperator(Layer):
         return x
 
     def _call3d(self, inputs):
-        s0, s1, s2 = backend.int_shape(inputs)[1:-1]  # Spatial size
+        s0, s1, s2 = inputs.shape[1:-1]  # Spatial size
         modes_0, modes_1, modes_2 = self.num_modes
-        ndim = backend.ndim(inputs)
+        ndim = inputs.ndim
 
         assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1 and s2 >= 2 * modes_2
 

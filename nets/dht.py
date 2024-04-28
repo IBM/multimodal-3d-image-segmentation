@@ -10,7 +10,6 @@ Author: Ken C. L. Wong
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import backend
 
 __author__ = 'Ken C. L. Wong'
 
@@ -51,7 +50,7 @@ def dht2d(x, is_inverse=False):
     x_hart = tf.math.real(x_fft) - tf.math.imag(x_fft)
 
     if is_inverse:
-        x_hart = x_hart / tf.cast(backend.prod(backend.int_shape(x_hart)[-2:]), tf.float32)
+        x_hart = x_hart / tf.cast(tf.reduce_prod(x_hart.shape[-2:]), tf.float32)
 
     return x_hart
 
@@ -74,6 +73,6 @@ def dht3d(x, is_inverse=False):
     x_hart = tf.math.real(x_fft) - tf.math.imag(x_fft)
 
     if is_inverse:
-        x_hart = x_hart / tf.cast(backend.prod(backend.int_shape(x_hart)[-3:]), tf.float32)
+        x_hart = x_hart / tf.cast(tf.reduce_prod(x_hart.shape[-3:]), tf.float32)
 
     return x_hart
