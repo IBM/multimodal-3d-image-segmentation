@@ -28,7 +28,7 @@ class HartleyMultiHeadAttention(Layer):
         num_modes: Number of frequency modes (k_max). Can be an int or a list of int.
             Note that `num_modes` must be smaller than half of the input spatial size in each dimension,
             and must be divisible by `patch_size`.
-        patch_size: Patch size for grouping in the frequency domain.
+        patch_size: Patch size for grouping in the frequency domain (default: None).
         attention_activation: Activation applied on the attention matrix (default: 'selu').
         value_dim: Size of each attention head for value. If None (default), `key_dim` is used.
         use_bias: If True, biases are added to the query, value, key, and output tensors (default: False).
@@ -46,7 +46,7 @@ class HartleyMultiHeadAttention(Layer):
                  num_heads,
                  key_dim,
                  num_modes,
-                 patch_size,
+                 patch_size=None,
                  attention_activation='selu',
                  value_dim=None,
                  use_bias=False,
@@ -104,6 +104,9 @@ class HartleyMultiHeadAttention(Layer):
         else:
             assert len(self.num_modes) == ndim - 2
             self.num_modes = tuple(self.num_modes)
+
+        if np.isscalar(self.patch_size):
+            self.patch_size = (self.patch_size,) * (ndim - 2)
 
         # Ensures proper modes range
         if ndim == 4:
@@ -206,14 +209,15 @@ class HartleyMultiHeadAttention(Layer):
             value = value + self.bias_value
 
         # Dimension reduction by grouping, (B, C * prod(patch_size), HEADS, num_d, num_h, num_w)
-        if ndim == 4:
-            query = grouping2d(query, self.patch_size)
-            key = grouping2d(key, self.patch_size)
-            value = grouping2d(value, self.patch_size)
-        else:
-            query = grouping3d(query, self.patch_size)
-            key = grouping3d(key, self.patch_size)
-            value = grouping3d(value, self.patch_size)
+        if self.patch_size is not None:
+            if ndim == 4:
+                query = grouping2d(query, self.patch_size)
+                key = grouping2d(key, self.patch_size)
+                value = grouping2d(value, self.patch_size)
+            else:
+                query = grouping3d(query, self.patch_size)
+                key = grouping3d(key, self.patch_size)
+                value = grouping3d(value, self.patch_size)
 
         spatial_shape_freq = tuple(query.shape[3:])  # Spatial shape before flattening
 
@@ -231,10 +235,11 @@ class HartleyMultiHeadAttention(Layer):
         output = tf.reshape(output, (-1,) + tuple(output.shape[1:3]) + spatial_shape_freq)
 
         # Get back the original spatial shape of query, (B, C, HEADS, D, H, W)
-        if ndim == 4:
-            output = ungrouping2d(output, self.value_dim, self.patch_size)
-        else:
-            output = ungrouping3d(output, self.value_dim, self.patch_size)
+        if self.patch_size is not None:
+            if ndim == 4:
+                output = ungrouping2d(output, self.value_dim, self.patch_size)
+            else:
+                output = ungrouping3d(output, self.value_dim, self.patch_size)
 
         shape = tuple(output.shape)
         output = tf.reshape(output, (-1,) + (shape[1] * shape[2],) + shape[3:])
