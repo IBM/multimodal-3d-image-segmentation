@@ -120,6 +120,10 @@ We find that in the official validation results, the "enhancing tumor" (ET) regi
 
 ## Updates
 
+### 2025-03
+
+1. The PyTorch implementation with new architectures will be available soon.
+
 ### 2024-04
 
 1. Updated codes for the most recent version of TensorFlow (2.16.1).
