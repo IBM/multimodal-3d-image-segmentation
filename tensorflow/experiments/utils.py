@@ -1,5 +1,5 @@
 #
-# Copyright 2024 IBM Inc. All rights reserved
+# Copyright 2023 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
@@ -9,6 +9,7 @@ Author: Ken C. L. Wong
 """
 
 import os
+import sys
 import numpy as np
 import SimpleITK as sitk
 from configparser import ConfigParser, ExtendedInterpolation
@@ -16,57 +17,48 @@ import ast
 from collections import OrderedDict
 from io import StringIO
 
-import torch
-from torchinfo import summary
-
 __author__ = 'Ken C. L. Wong'
 
 
-def normalize_modalities(data, mask_val=None, clip_val=None):
+def normalize_modalities(data, mask_val=None):
     """Normalizes a multichannel input with each channel as a modality.
     Each modality is normalized separately.
-    Note that the channel-first format is assumed.
+    Note that the channel-last format is assumed.
 
     Args:
-        data: A multichannel input with each channel as a modality (channel-first).
-        mask_val: If not None, the intensities of `mask_val` are not used to compute mean and std (default: None).
-        clip_val: A tuple of (min, max) values to be clipped (default: None).
+        data: A multichannel input with each channel as a modality (channel-last).
+        mask_val: If not None, the intensities of mask_val are not used to compute mean and std (default: None).
 
     Returns:
         Normalized data.
     """
-    data = [normalize_data(da, mask_val=mask_val, clip_val=clip_val) for da in data]
-    data = np.stack(data)
+    data = np.moveaxis(data, -1, 0)  # (modality, <spatial_size>)
+    data = [normalize_data(da, mask_val=mask_val) for da in data]
+    data = np.stack(data, -1)
     return data
 
 
-def normalize_data(data, mask_val=None, clip_val=None):
+def normalize_data(data, mask_val=None):
     """Normalizes data of a single modality.
 
     Args:
         data: The data of a single modality.
-        mask_val: If not None, the intensities of `mask_val` are not used to compute mean and std (default: None).
-        clip_val: A tuple of (min, max) values to be clipped (default: None).
+        mask_val: If not None, the intensities of mask_val are not used to compute mean and std (default: None).
 
     Returns:
         Normalized data.
     """
     data = np.asarray(data, dtype=np.float32)
-
-    if clip_val is not None:
-        data = np.clip(data, *clip_val)
-
     if mask_val is not None:
         data = np.ma.array(data, mask=(data == mask_val))
 
     mean = data.mean()
     std = data.std()
+
     data = (data - mean) / std
 
     if mask_val is not None:
-        data = data.filled(0)  # With mean 0 and std 1 after normalization, filling with 0 is a good choice.
-
-    data = np.asarray(data, dtype=np.float32)  # As numpy may change the dtype
+        data = data.filled(mask_val)
 
     return data
 
@@ -75,25 +67,23 @@ def to_categorical(y, num_classes=None):
     """Converts an int label tensor to one-hot.
 
     Args:
-        y: Input label tensor with shape (B, 1, D, H, W).
+        y: Input label tensor with shape (B, D, H, W, 1).
         num_classes: Number of classes.
 
     Returns:
-        A one-hot tensor of y with shape (B, num_classes, D, H, W).
+        A one-hot tensor of y with shape (B, D, H, W, num_classes).
     """
-    assert y.shape[1] == 1, 'Can only handle single label per pixel.'
-    y = y[:, 0]
-    y = y.to(dtype=int)
+    assert y.shape[-1] == 1, 'Can only handle single label per pixel.'
+    y = np.asarray(y, dtype=int)[..., 0]
     input_shape = y.shape
     y = y.ravel()
     if not num_classes:
-        num_classes = y.max() + 1
+        num_classes = np.max(y) + 1
     n = y.shape[0]
-    categorical = torch.zeros((n, num_classes), dtype=torch.float32, device=y.device)
-    categorical[torch.arange(n), y] = 1
+    categorical = np.zeros((n, num_classes), dtype=np.float32)
+    categorical[np.arange(n), y] = 1
     output_shape = input_shape + (num_classes,)
-    categorical = torch.reshape(categorical, output_shape)
-    categorical = torch.moveaxis(categorical, -1, 1)  # Channel-first
+    categorical = np.reshape(categorical, output_shape)
     return categorical
 
 
@@ -107,31 +97,25 @@ def remap_labels(label, mapping):
     Returns:
         A copy of remapped labels.
     """
-    if isinstance(label, np.ndarray):
-        label_cp = label.copy()
-    elif isinstance(label, torch.Tensor):
-        label_cp = label.detach().clone()
-    else:
-        raise ValueError('Input "label" must be a Numpy array or PyTorch tensor.')
-
+    label = np.asarray(label)
+    label_cp = label.copy()
     for k, v in mapping.items():
         label_cp[label == k] = v
     return label_cp
 
 
-def save_model_summary(model, input_size, path=None):
+def save_model_summary(model, path):
     """Saves model summary to a text file.
 
     Args:
-        model: A PyTorch model.
-        input_size: Input size.
-        path: A full output file path (default: None).
+        model: A Keras model.
+        path: A full output file path.
     """
-    net_summary = summary(model, input_size=input_size, device='meta', verbose=0)
-    if path is not None:
-        with open(path, 'w') as f:
-            print(net_summary, file=f)
-    return net_summary
+    with open(path, 'w') as f:
+        current_stdout = sys.stdout
+        sys.stdout = f
+        print(model.summary())
+        sys.stdout = current_stdout
 
 
 def get_config(config_file, source=None):
@@ -184,29 +168,6 @@ def save_config(config_args, output_dir):
         f.write(config_args['config'].getvalue())
 
 
-def load_np_data(file_path, allow_pickle=False):
-    """Loads data from a single-array npy or npz file.
-
-    Args:
-        file_path: A full file path to a npy or npz file.
-        allow_pickle : bool, optional
-            Allow loading pickled object arrays stored in npy files. Reasons for
-            disallowing pickles include security, as loading pickled data can
-            execute arbitrary code. If pickles are disallowed, loading object
-            arrays will fail (default: False).
-
-    Returns:
-        Loaded data.
-    """
-    if file_path is not None:
-        data = np.load(file_path, allow_pickle=allow_pickle)
-        if isinstance(data, np.lib.npyio.NpzFile):
-            data = data[data.files[0]]
-        return data
-    else:
-        return None
-
-
 def get_data_lists(data_lists_paths, data_dir=None):
     """Creates a multimodal data list for file reading.
 
@@ -233,7 +194,7 @@ def get_data_lists(data_lists_paths, data_dir=None):
 
 def save_output(y, data_lists_test, idx_sample, output_dir, output_origin=None, suffix=''):
     """Saves a label map to a nii.gz file.
-    Warning: this function is hard-coded for our BraTS'19 and KiTS'23 experiments.
+    Warning: this function is hard-coded for our BraTS'19 experiments.
 
     Args:
         y: A predicted or ground-truth label map.
@@ -241,17 +202,18 @@ def save_output(y, data_lists_test, idx_sample, output_dir, output_origin=None, 
             We use data_lists_test[0][idx_sample] to get the patient ID.
         idx_sample: Index to the sample in data_lists_test.
         output_dir: The output directory.
-        output_origin: If not None, it is the "image origin" (x, y, z) of the output (default: None).
+        output_origin: If not None, it is the "image origin" of the output (default: None).
             See ITK for the details of "image origin".
         suffix: The suffix attached to the output filename (default: '').
     """
-    y = np.asarray(y, dtype=np.uint8)
+    y = np.asarray(y, dtype=np.int16)
     y = sitk.GetImageFromArray(y)
     if output_origin is not None:
         y.SetOrigin(output_origin)
 
     fname = data_lists_test[0][idx_sample]
-    pid = fname.split('/')[-2]  # Patient IDs are the folder names for both BraTS and KiTS
+    fname = os.path.basename(fname)
+    pid = '_'.join(fname.split('_')[:-1])  # Extracts the patient ID according to BraTS'19 naming format
     fname = os.path.join(output_dir, f'{pid}{suffix}.nii.gz')
     os.makedirs(os.path.dirname(fname), exist_ok=True)
     sitk.WriteImage(y, fname, True)

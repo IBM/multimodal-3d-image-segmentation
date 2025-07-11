@@ -2,4 +2,7 @@
 *-checkpoint.ipynb
 .ipynb_checkpoints/
 *~
-*.idea*
+.idea/
+.git/
+.vscode/
+**/__pycache__

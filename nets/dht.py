@@ -1,5 +1,5 @@
 #
-# Copyright 2023 IBM Inc. All rights reserved
+# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
@@ -8,71 +8,59 @@
 Author: Ken C. L. Wong
 """
 
-import numpy as np
-import tensorflow as tf
+import torch
 
 __author__ = 'Ken C. L. Wong'
 
 
-def standardize_type_fft(x):
-    """Standardizes data for TensorFlow FFT.
+def dhtn(x, dim, is_inverse=False):
+    """Computes (inverse) discrete Hartley transform (DHT) over the innermost dimensions.
+
+    torch.fft.fftn is used.
 
     Args:
-        x: An ndarray or TensorFlow tensor to be standardized.
-
-    Returns:
-        A complex64 tensor or a float32 ndarray.
-    """
-    if tf.is_tensor(x):
-        if x.dtype in ['float32', 'float64']:  # Must be converted to complex for TF tensor
-            x = tf.complex(x, tf.zeros_like(x))
-        x = tf.cast(x, tf.complex64)
-    else:
-        x = np.asarray(x, dtype=np.float32)  # TF fft converts ndarray automatically
-    return x
-
-
-def dht2d(x, is_inverse=False):
-    """Computes discrete Hartley transform over the innermost dimensions.
-
-    The FFT of TensorFlow is used. Note that inverse DHT is DHT divided by the number of
-    elements in the innermost dimensions.
-
-    Args:
-        x: Input tensor/ndarray.
-        is_inverse: True if inverse DHT is desired.
+        x: Input tensor.
+        dim: Dimensions to be transformed.
+        is_inverse: If True, inverse transform is performed (default: False).
 
     Returns:
         The DHT output.
     """
-    x = standardize_type_fft(x)
-    x_fft = tf.signal.fft2d(x)
-    x_hart = tf.math.real(x_fft) - tf.math.imag(x_fft)
-
-    if is_inverse:
-        x_hart = x_hart / tf.cast(tf.reduce_prod(x_hart.shape[-2:]), tf.float32)
+    # Using DHT with 1/N normalization (and inverse without normalization)
+    # allows transforms of different image sizes to have similar intensity
+    # ranges in the frequency domain, which is beneficial for super-resolution
+    norm = 'backward' if is_inverse else 'forward'
+    x_fft = torch.fft.fftn(x, dim=dim, norm=norm)
+    x_hart = x_fft.real - x_fft.imag
 
     return x_hart
 
 
-def dht3d(x, is_inverse=False):
-    """Computes discrete Hartley transform over the innermost dimensions.
+def dht2(x, is_inverse=False):
+    """Computes (inverse) discrete Hartley transform (DHT) over the innermost dimensions.
 
-    The FFT of TensorFlow is used. Note that inverse DHT is DHT divided by the number of
-    elements in the innermost dimensions.
+    torch.fft.fftn is used.
 
     Args:
-        x: Input tensor/ndarray.
-        is_inverse: True if inverse DHT is desired.
+        x: Input tensor.
+        is_inverse: If True, inverse transform is performed (default: False).
 
     Returns:
         The DHT output.
     """
-    x = standardize_type_fft(x)
-    x_fft = tf.signal.fft3d(x)
-    x_hart = tf.math.real(x_fft) - tf.math.imag(x_fft)
+    return dhtn(x, dim=(-2, -1), is_inverse=is_inverse)
 
-    if is_inverse:
-        x_hart = x_hart / tf.cast(tf.reduce_prod(x_hart.shape[-3:]), tf.float32)
 
-    return x_hart
+def dht3(x, is_inverse=False):
+    """Computes (inverse) discrete Hartley transform (DHT) over the innermost dimensions.
+
+    torch.fft.fftn is used.
+
+    Args:
+        x: Input tensor.
+        is_inverse: If True, inverse transform is performed (default: False).
+
+    Returns:
+        The DHT output.
+    """
+    return dhtn(x, dim=(-3, -2, -1), is_inverse=is_inverse)

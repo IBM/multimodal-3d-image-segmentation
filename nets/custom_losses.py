@@ -1,146 +1,133 @@
 #
-# Copyright 2023 IBM Inc. All rights reserved
+# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
-"""Custom Keras loss functions.
+"""Custom loss functions.
 
 Author: Ken C. L. Wong
 """
 
-from keras.src.losses.losses import LossFunctionWrapper, Loss
-import tensorflow as tf
+import torch
+from torch.nn import Module
 
 __author__ = 'Ken C. L. Wong'
 
 
-def corrcoef(y_true, y_pred):
+def corrcoef(y_pred, y_true):
     """Computes the Pearson's correlation coefficients.
 
     Args:
-        y_true: One-hot ground truth labels.
         y_pred: Prediction scores.
+        y_true: One-hot ground truth labels.
 
     Returns:
         Pearson's correlation coefficients with shape (batch_size, num_labels).
     """
     ndim = y_true.ndim
-    axis = list(range(ndim))[1:-1]  # Spatial dimensions
+    axis = list(range(ndim))[2:]  # Spatial dimensions
 
-    assert ndim in [3, 4, 5]
+    assert ndim in (3, 4, 5)
 
-    y_true = y_true - tf.reduce_mean(y_true, axis=axis, keepdims=True)
-    y_pred = y_pred - tf.reduce_mean(y_pred, axis=axis, keepdims=True)
+    y_true = y_true - torch.mean(y_true, dim=axis, keepdim=True)
+    y_pred = y_pred - torch.mean(y_pred, dim=axis, keepdim=True)
 
-    tp = tf.reduce_sum(y_true * y_pred, axis=axis)
-    tt = tf.reduce_sum(tf.square(y_true), axis=axis)
-    pp = tf.reduce_sum(tf.square(y_pred), axis=axis)
+    tp = torch.sum(y_true * y_pred, dim=axis)
+    tt = torch.sum(torch.square(y_true), dim=axis)
+    pp = torch.sum(torch.square(y_pred), dim=axis)
 
-    output = tp / tf.sqrt(tt * pp + 1e-7)
+    output = tp / torch.sqrt(tt * pp + 1e-7)
 
     return output
 
 
-def pcc_loss(y_true, y_pred):
+class PCCLoss(Module):
     """Loss function based on the Pearson's correlation coefficient (PCC).
 
     Please refer to our MLMI 2022 paper for more details:
     Wong, K.C.L., Moradi, M. (2022). 3D Segmentation with Fully Trainable Gabor Kernels
     and Pearson’s Correlation Coefficient. In: Machine Learning in Medical Imaging. MLMI 2022.
     https://doi.org/10.1007/978-3-031-21014-3_6
-
-    Args:
-        y_true: One-hot ground truth labels.
-        y_pred: Prediction scores.
-
-    Returns:
-        The PCC loss with shape (batch_size,).
     """
-    output = corrcoef(y_true, y_pred)  # (-1, 1)
-    output = (output + 1) * 0.5  # (0, 1)
-    output = 1 - output
-    return tf.reduce_mean(output, axis=-1)
+
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def forward(y_pred, y_true):
+        """Loss function based on the Pearson's correlation coefficient (PCC).
+
+        Args:
+            y_pred: Prediction scores.
+            y_true: One-hot ground truth labels.
+
+        Returns:
+            The PCC loss.
+        """
+        output = corrcoef(y_pred, y_true)  # (-1, 1)
+        output = (output + 1) * 0.5  # (0, 1)
+        output = 1 - output
+        return torch.mean(output)
 
 
-class PCCLoss(LossFunctionWrapper):
-    """Loss function based on the Pearson's correlation coefficient (PCC).
-
-    Please refer to our MLMI 2022 paper for more details:
-    Wong, K.C.L., Moradi, M. (2022). 3D Segmentation with Fully Trainable Gabor Kernels
-    and Pearson’s Correlation Coefficient. In: Machine Learning in Medical Imaging. MLMI 2022.
-    https://doi.org/10.1007/978-3-031-21014-3_6
-
-    Args:
-        reduction: Type of reduction to apply to the loss. In almost all cases
-            this should be `"sum_over_batch_size"`.
-            Supported options are `"sum"`, `"sum_over_batch_size"` or `None`.
-        name: Optional name for the instance.
-    """
-    def __init__(self,
-                 reduction='sum_over_batch_size',
-                 name='pcc_loss'):
-        super().__init__(
-            pcc_loss,
-            name=name,
-            reduction=reduction
-        )
-
-    def get_config(self):
-        return Loss.get_config(self)
-
-
-def dice_coef(y_true, y_pred):
+def dice_coef(y_pred, y_true):
     """Computes the (soft) Dice coefficients.
 
     Args:
-        y_true: One-hot ground truth labels.
         y_pred: Prediction scores.
+        y_true: One-hot ground truth labels.
 
     Returns:
         The (soft) Dice coefficients with shape (batch_size, num_labels).
     """
     ndim = y_true.ndim
-    axis = list(range(ndim))[1:-1]  # Spatial dimensions
+    axis = list(range(ndim))[2:]  # Spatial dimensions
 
-    assert ndim in [3, 4, 5]
+    assert ndim in (3, 4, 5)
 
-    intersection = tf.reduce_sum(y_true * y_pred, axis=axis)
-    union = tf.reduce_sum(y_true + y_pred, axis=axis)
+    intersection = torch.sum(y_true * y_pred, dim=axis)
+    union = torch.sum(y_true + y_pred, dim=axis)
     return 2. * intersection / (union + 1e-7)
 
 
-def dice_loss(y_true, y_pred):
-    """Dice loss.
+class DiceLoss(Module):
+    """Dice loss."""
+    def __init__(self):
+        super().__init__()
 
-    Args:
-        y_true: One-hot ground truth labels.
-        y_pred: Prediction scores.
+    @staticmethod
+    def forward(y_pred, y_true):
+        """Dice loss.
 
-    Returns:
-        The Dice loss with shape (batch_size,).
-    """
-    output = dice_coef(y_true, y_pred)
-    output = 1 - output
-    return tf.reduce_mean(output, axis=-1)
+        Args:
+            y_pred: Prediction scores.
+            y_true: One-hot ground truth labels.
+
+        Returns:
+            The Dice loss.
+        """
+        output = dice_coef(y_pred, y_true)
+        output = 1 - output
+        return torch.mean(output)
 
 
-class DiceLoss(LossFunctionWrapper):
-    """Dice loss.
+class ExpDiceLoss(Module):
+    """Exponential Dice loss."""
+    def __init__(self, exp=0.3):
+        super().__init__()
+        self.exp = exp
 
-    Args:
-        reduction: Type of reduction to apply to the loss. In almost all cases
-            this should be `"sum_over_batch_size"`.
-            Supported options are `"sum"`, `"sum_over_batch_size"` or `None`.
-        name: Optional name for the instance.
-    """
-    def __init__(self,
-                 reduction='sum_over_batch_size',
-                 name='dice_loss'):
-        super().__init__(
-            dice_loss,
-            name=name,
-            reduction=reduction
-        )
+    def forward(self, y_pred, y_true):
+        """Exponential Dice loss.
 
-    def get_config(self):
-        return Loss.get_config(self)
+        Args:
+            y_pred: Prediction scores.
+            y_true: One-hot ground truth labels.
+
+        Returns:
+            The exponential Dice loss.
+        """
+        output = dice_coef(y_pred, y_true)
+        output = torch.clamp(output, 1e-7, 1.0 - 1e-7)
+        output = torch.pow(-torch.log(output), self.exp)
+        return torch.mean(output)

@@ -1,104 +1,82 @@
 #
-# Copyright 2023 IBM Inc. All rights reserved
+# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
-import tensorflow as tf
-from keras.layers import Layer, InputSpec
-from keras import constraints
-from keras import initializers
-from keras import regularizers
-
 import numpy as np
+from typing import Union
+import math
 
-from nets.dht import dht2d, dht3d
+import torch
+from torch.nn import Module, Parameter, init
+
+from .dht import dht2, dht3
 
 __author__ = 'Ken C. L. Wong'
 
 
-class HartleyMultiHeadAttention(Layer):
-    """A Keras layer that applies the Hartley multi-head attention.
+class HartleyMultiHeadAttention(Module):
+    """A layer that applies the Hartley multi-head attention.
     The input tensor is Hartley transformed and multi-head self-attention is applied
     in the frequency domain. The inverse Hartley transform converts the results back
     to the spatial domain.
 
+    The number of output channels is given by `value_dim`. If it is None, `key_dim` is used.
+
     Args:
+        in_channels: Number of input channels for query. It also represents `key_in_channels`
+            or `value_in_channels` if they are None.
+        key_dim: Number of output channels of each attention head for query and key.
+            It also represents `value_dim` if it is None.
         num_heads: Number of attention heads.
-        key_dim: Size of each attention head for query and key.
-        num_modes: Number of frequency modes (k_max). Can be an int or a list of int.
+        num_modes: Number of frequency modes (k_max). Can be an int or a list of int (d, h, w).
             Note that `num_modes` must be smaller than half of the input spatial size in each dimension,
             and must be divisible by `patch_size`.
         patch_size: Patch size for grouping in the frequency domain (default: None).
         attention_activation: Activation applied on the attention matrix (default: 'selu').
-        value_dim: Size of each attention head for value. If None (default), `key_dim` is used.
+            If a str is provided, the activation from torch.nn.functional is used.
+        value_dim: Number of output channels of each attention head for value (default: None).
+            If None, `key_dim` is used.
+        key_in_channels: Number of input channels for key. If None, `in_channels` is used (default: None).
+        value_in_channels: Number of input channels for value. If None, `in_channels` is used (default: None).
         use_bias: If True, biases are added to the query, value, key, and output tensors (default: False).
-        kernel_initializer: Kernel weights initializer (default: 'glorot_uniform').
-        bias_initializer: Bias weights initializer (default: 'zeros').
-        kernel_regularizer: Kernel regularizer (default: None).
-        bias_regularizer: Bias regularizer (default: None).
-        kernel_constraint: Kernel constraint (default: None).
-        bias_constraint: Bias constraint (default: None).
-        trainable: If True (default), the layer is trainable.
-        name: Optional name for the instance (default: None).
-        **kwargs: Optional keyword arguments.
+        use_transform: If True, the Hartley transform is used (default: True).
+            Otherwise, the inputs are already in the frequency domain.
+        ndim: Input tensor dimension, i.e., 5 for 3D problems, 4 for 2D problems (default: 5).
+        device: Device index to select, e.g., 'cuda', 'cpu' (default: None).
+        dtype: Data type (default: None).
     """
     def __init__(self,
-                 num_heads,
+                 in_channels,
                  key_dim,
+                 num_heads,
                  num_modes,
                  patch_size=None,
-                 attention_activation='selu',
+                 attention_activation: Union[str, callable] = 'selu',
                  value_dim=None,
+                 key_in_channels=None,
+                 value_in_channels=None,
                  use_bias=False,
-                 kernel_initializer='glorot_uniform',
-                 bias_initializer='zeros',
-                 kernel_regularizer=None,
-                 bias_regularizer=None,
-                 kernel_constraint=None,
-                 bias_constraint=None,
-                 trainable=True,
-                 name=None,
-                 **kwargs):
-        super().__init__(trainable=trainable, name=name, **kwargs)
+                 use_transform=True,
+                 ndim=5,
+                 device=None,
+                 dtype=None):
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__()
 
-        self.num_heads = num_heads
+        self.in_channels = in_channels
         self.key_dim = key_dim
+        self.num_heads = num_heads
         self.num_modes = num_modes
         self.patch_size = patch_size
         self.attention_activation = attention_activation
         self.value_dim = value_dim or key_dim
+        self.key_in_channels = key_in_channels or in_channels
+        self.value_in_channels = value_in_channels or self.key_in_channels
         self.use_bias = use_bias
-        self.kernel_initializer = initializers.get(kernel_initializer)
-        self.bias_initializer = initializers.get(bias_initializer)
-        self.kernel_regularizer = regularizers.get(kernel_regularizer)
-        self.bias_regularizer = regularizers.get(bias_regularizer)
-        self.kernel_constraint = constraints.get(kernel_constraint)
-        self.bias_constraint = constraints.get(bias_constraint)
+        self.use_transform = use_transform
 
-        self.kernel_query = None
-        self.kernel_key = None
-        self.kernel_value = None
-        self.kernel_out = None
-
-        self.bias_query = None
-        self.bias_key = None
-        self.bias_value = None
-        self.bias_out = None
-
-    def build(self, input_shape):
-        if not isinstance(input_shape[0], (tuple, tf.TensorShape)):  # Single input
-            query_shape = key_shape = value_shape = input_shape
-        elif len(input_shape) == 2:
-            query_shape = input_shape[0]
-            key_shape = value_shape = input_shape[1]
-        elif len(input_shape) == 3:
-            query_shape, key_shape, value_shape = input_shape
-        else:
-            raise ValueError('Invalid inputs.')
-
-        ndim = len(query_shape)
-
-        # Ensures self.num_modes be a tuple
+        # Ensures self.num_modes is a tuple
         if np.isscalar(self.num_modes):
             self.num_modes = (self.num_modes,) * (ndim - 2)
         else:
@@ -108,107 +86,97 @@ class HartleyMultiHeadAttention(Layer):
         if np.isscalar(self.patch_size):
             self.patch_size = (self.patch_size,) * (ndim - 2)
 
-        # Ensures proper modes range
-        if ndim == 4:
-            s0, s1 = query_shape[1:-1]
-            modes_0, modes_1 = self.num_modes
-            assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1
-        else:
-            s0, s1, s2 = query_shape[1:-1]
-            modes_0, modes_1, modes_2 = self.num_modes
-            assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1 and s2 >= 2 * modes_2
+        if isinstance(self.attention_activation, str):
+            self.attention_activation = getattr(torch.nn.functional, self.attention_activation)
 
-        self.kernel_query = self.add_weight(
-            name='kernel_query',
-            shape=(query_shape[-1], self.key_dim, self.num_heads),
-            initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint)
-
-        self.kernel_key = self.add_weight(
-            name='kernel_key',
-            shape=(key_shape[-1], self.key_dim, self.num_heads),
-            initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint)
-
-        self.kernel_value = self.add_weight(
-            name='kernel_value',
-            shape=(value_shape[-1], self.value_dim, self.num_heads),
-            initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint)
-
-        self.kernel_out = self.add_weight(
-            name='kernel_out',
-            shape=(self.value_dim * self.num_heads, self.value_dim),
-            initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint)
+        self.weight_query = Parameter(torch.empty(
+            (self.num_heads, self.key_dim, self.in_channels), **factory_kwargs))
+        self.weight_key = Parameter(torch.empty(
+            (self.num_heads, self.key_dim, self.key_in_channels), **factory_kwargs))
+        self.weight_value = Parameter(torch.empty(
+            (self.num_heads, self.value_dim, self.value_in_channels), **factory_kwargs))
+        self.weight_out = Parameter(torch.empty(
+            (self.value_dim, self.value_dim * self.num_heads), **factory_kwargs))
 
         if self.use_bias:
-            self.bias_query = self.add_weight(
-                name='bias_query',
-                shape=(self.key_dim, self.num_heads) + (1,) * (ndim - 2),  # 1's are necessary for broadcast
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint)
+            self.bias_query = Parameter(torch.empty(
+                (1, self.num_heads, self.key_dim) + (1,) * (ndim - 2), **factory_kwargs))
+            self.bias_key = Parameter(torch.empty(
+                (1, self.num_heads, self.key_dim) + (1,) * (ndim - 2), **factory_kwargs))
+            self.bias_value = Parameter(torch.empty(
+                (1, self.num_heads, self.value_dim) + (1,) * (ndim - 2), **factory_kwargs))
+            self.bias_out = Parameter(torch.empty(
+                (1, self.value_dim) + (1,) * (ndim - 2), **factory_kwargs))
+        else:
+            self.register_parameter('bias_query', None)
+            self.register_parameter('bias_key', None)
+            self.register_parameter('bias_value', None)
+            self.register_parameter('bias_out', None)
 
-            self.bias_key = self.add_weight(
-                name='bias_key',
-                shape=(self.key_dim, self.num_heads) + (1,) * (ndim - 2),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint)
+        self.reset_parameters()
 
-            self.bias_value = self.add_weight(
-                name='bias_value',
-                shape=(self.value_dim, self.num_heads) + (1,) * (ndim - 2),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint)
+    def reset_parameters(self):
+        self._reset_parameters(self.weight_query, self.bias_query)
+        self._reset_parameters(self.weight_key, self.bias_key)
+        self._reset_parameters(self.weight_value, self.bias_value)
+        self._reset_parameters(self.weight_out, self.bias_out)
 
-            self.bias_out = self.add_weight(
-                name='bias_out',
-                shape=(self.value_dim,) + (1,) * (ndim - 2),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint)
+    @staticmethod
+    def _reset_parameters(weight, bias):
+        init.kaiming_uniform_(weight, a=math.sqrt(5))
+        if bias is not None:
+            init.zeros_(bias)
 
-        self.input_spec = InputSpec(ndim=ndim)
-        self.built = True
+    def forward(self, inputs):
+        if self.use_transform:
+            return self._call(inputs)
+        else:
+            return self._call_notransform(inputs)
 
-    def call(self, inputs):
+    def _call(self, inputs):
         if not isinstance(inputs, (tuple, list)):  # Single input
-            query = key = value = self.dht(inputs)  # (B, C, spatial)
+            spatial_shape = inputs.shape[2:]
+            query = key = value = self.dht(inputs)
         elif len(inputs) == 2:
+            spatial_shape = inputs[0].shape[2:]
             query = self.dht(inputs[0])
             key = value = self.dht(inputs[1])
         elif len(inputs) == 3:
+            spatial_shape = inputs[0].shape[2:]
             query = self.dht(inputs[0])
             key = self.dht(inputs[1])
             value = self.dht(inputs[2])
         else:
             raise ValueError('Invalid inputs.')
 
-        ndim = query.ndim  # Input ndim
-        spatial_shape = tuple(query.shape[2:])  # Input spatial shape
+        ndim = query.ndim
+        assert ndim in (4, 5)
+
+        # Ensures proper modes range
+        if ndim == 4:
+            s0, s1 = spatial_shape
+            modes_0, modes_1 = self.num_modes
+            assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1
+        else:
+            s0, s1, s2 = spatial_shape
+            modes_0, modes_1, modes_2 = self.num_modes
+            assert s0 >= 2 * modes_0 and s1 >= 2 * modes_1 and s2 >= 2 * modes_2
 
         if ndim == 4:
-            query = self._freq_conv2d(self.kernel_query, query)  # (B, C, HEADS, H, W)
-            key = self._freq_conv2d(self.kernel_key, key)
-            value = self._freq_conv2d(self.kernel_value, value)
+            query = self.freq_conv2d(self.weight_query, query)  # (B, HEADS, C, H, W)
+            key = self.freq_conv2d(self.weight_key, key)
+            value = self.freq_conv2d(self.weight_value, value)
         else:
-            query = self._freq_conv3d(self.kernel_query, query)  # (B, C, HEADS, D, H, W)
-            key = self._freq_conv3d(self.kernel_key, key)
-            value = self._freq_conv3d(self.kernel_value, value)
+            query = self.freq_conv3d(self.weight_query, query)  # (B, HEADS, C, D, H, W)
+            key = self.freq_conv3d(self.weight_key, key)
+            value = self.freq_conv3d(self.weight_value, value)
 
         if self.use_bias:
             query = query + self.bias_query
             key = key + self.bias_key
             value = value + self.bias_value
 
-        # Dimension reduction by grouping, (B, C * prod(patch_size), HEADS, num_d, num_h, num_w)
+        # Dimension reduction by grouping, (B, HEADS, C * prod(patch_size), num_d, num_h, num_w)
         if self.patch_size is not None:
             if ndim == 4:
                 query = grouping2d(query, self.patch_size)
@@ -219,94 +187,165 @@ class HartleyMultiHeadAttention(Layer):
                 key = grouping3d(key, self.patch_size)
                 value = grouping3d(value, self.patch_size)
 
-        spatial_shape_freq = tuple(query.shape[3:])  # Spatial shape before flattening
+        spatial_shape_freq = query.shape[3:]  # Spatial shape before flattening
 
-        query = self._spatial_flatten(query)  # (B, C * prod(patch_size), HEADS, num_d * num_h * num_w)
-        key = self._spatial_flatten(key)
-        value = self._spatial_flatten(value)
+        query = self.spatial_flatten(query)  # (B, HEADS, C * prod(patch_size), num_d * num_h * num_w)
+        key = self.spatial_flatten(key)
+        value = self.spatial_flatten(value)
 
-        att = tf.einsum('bchq,bchk->bhqk', query, key)
-        att = att / tf.sqrt(float(key.shape[1]))
+        att = torch.einsum('bzcq,bzck->bzqk', query, key)
+        att = att / np.sqrt(key.shape[2])
         if self.attention_activation is not None:
-            activation = getattr(tf.nn, self.attention_activation)
-            att = activation(att)
+            att = self.attention_activation(att)
 
-        output = tf.einsum('bhqk,bchk->bchq', att, value)
-        output = tf.reshape(output, (-1,) + tuple(output.shape[1:3]) + spatial_shape_freq)
+        output = torch.einsum('bzqk,bzck->bzcq', att, value)
+        output = torch.reshape(output, (-1,) + output.shape[1:3] + spatial_shape_freq)
 
-        # Get back the original spatial shape of query, (B, C, HEADS, D, H, W)
+        # Get back the original spatial shape of query, (B, HEADS, C, D, H, W)
         if self.patch_size is not None:
             if ndim == 4:
                 output = ungrouping2d(output, self.value_dim, self.patch_size)
             else:
                 output = ungrouping3d(output, self.value_dim, self.patch_size)
 
-        shape = tuple(output.shape)
-        output = tf.reshape(output, (-1,) + (shape[1] * shape[2],) + shape[3:])
-
-        equation = 'io,bihw->bohw' if ndim == 4 else 'io,bidhw->bodhw'
-        output = tf.einsum(equation, self.kernel_out, output)
+        # Group heads and channels
+        shape = output.shape
+        output = torch.reshape(output, (-1,) + (shape[1] * shape[2],) + shape[3:])
+        # Get MHA output
+        equation = 'oi,bihw->bohw' if ndim == 4 else 'oi,bidhw->bodhw'
+        output = torch.einsum(equation, self.weight_out, output)
         if self.use_bias:
             output = output + self.bias_out
 
-        output = self._inverse2d(output, spatial_shape) if ndim == 4 else self._inverse3d(output, spatial_shape)
+        output = self.inverse2d(output, spatial_shape) if ndim == 4 else self.inverse3d(output, spatial_shape)
 
         return output
 
-    @staticmethod
-    def dht(x):
-        # Convert to channel-first as dht(fft) only works on the innermost dimensions
-        ndim = x.ndim
-        perm = [0, ndim - 1] + list(range(1, ndim - 1))  # (B, C, spatial)
-        x = tf.transpose(x, perm=perm)
+    def _call_notransform(self, inputs):
+        if not isinstance(inputs, (tuple, list)):  # Single input
+            query = key = value = inputs
+        elif len(inputs) == 2:
+            query = inputs[0]
+            key = value = inputs[1]
+        elif len(inputs) == 3:
+            query = inputs[0]
+            key = inputs[1]
+            value = inputs[2]
+        else:
+            raise ValueError('Invalid inputs.')
+
+        ndim = query.ndim
+        assert ndim in (4, 5)
 
         if ndim == 4:
-            return dht2d(x)
-        return dht3d(x)
+            query = self.freq_conv2d_notransform(self.weight_query, query)  # (B, HEADS, C, H, W)
+            key = self.freq_conv2d_notransform(self.weight_key, key)
+            value = self.freq_conv2d_notransform(self.weight_value, value)
+        else:
+            query = self.freq_conv3d_notransform(self.weight_query, query)  # (B, HEADS, C, D, H, W)
+            key = self.freq_conv3d_notransform(self.weight_key, key)
+            value = self.freq_conv3d_notransform(self.weight_value, value)
 
-    def _freq_conv2d(self, kernel, x):
-        equation = 'ioz,bihw->bozhw'  # z: heads
+        if self.use_bias:
+            query = query + self.bias_query
+            key = key + self.bias_key
+            value = value + self.bias_value
+
+        # Dimension reduction by grouping, (B, HEADS, C * prod(patch_size), num_d, num_h, num_w)
+        if self.patch_size is not None:
+            if ndim == 4:
+                query = grouping2d(query, self.patch_size)
+                key = grouping2d(key, self.patch_size)
+                value = grouping2d(value, self.patch_size)
+            else:
+                query = grouping3d(query, self.patch_size)
+                key = grouping3d(key, self.patch_size)
+                value = grouping3d(value, self.patch_size)
+
+        spatial_shape_freq = query.shape[3:]  # Spatial shape before flattening
+
+        query = self.spatial_flatten(query)  # (B, HEADS, C * prod(patch_size), num_d * num_h * num_w)
+        key = self.spatial_flatten(key)
+        value = self.spatial_flatten(value)
+
+        att = torch.einsum('bzcq,bzck->bzqk', query, key)
+        att = att / np.sqrt(key.shape[2])
+        if self.attention_activation is not None:
+            att = self.attention_activation(att)
+
+        output = torch.einsum('bzqk,bzck->bzcq', att, value)
+        output = torch.reshape(output, (-1,) + output.shape[1:3] + spatial_shape_freq)
+
+        # Get back the original spatial shape of query, (B, HEADS, C, D, H, W)
+        if self.patch_size is not None:
+            if ndim == 4:
+                output = ungrouping2d(output, self.value_dim, self.patch_size)
+            else:
+                output = ungrouping3d(output, self.value_dim, self.patch_size)
+
+        # Group heads and channels
+        shape = output.shape
+        output = torch.reshape(output, (-1,) + (shape[1] * shape[2],) + shape[3:])
+        # Get MHA output
+        equation = 'oi,bihw->bohw' if ndim == 4 else 'oi,bidhw->bodhw'
+        output = torch.einsum(equation, self.weight_out, output)
+        if self.use_bias:
+            output = output + self.bias_out
+
+        return output
+
+    def freq_conv2d(self, weight, x):
+        equation = 'zoi,bihw->bzohw'  # z: heads
         modes_0, modes_1 = self.num_modes
 
-        ll = tf.einsum(equation, kernel, x[..., :modes_0, :modes_1])
-        lh = tf.einsum(equation, kernel, x[..., :modes_0, -modes_1:])
-        hl = tf.einsum(equation, kernel, x[..., -modes_0:, :modes_1])
-        hh = tf.einsum(equation, kernel, x[..., -modes_0:, -modes_1:])
+        ll = torch.einsum(equation, weight, x[..., :modes_0, :modes_1])
+        lh = torch.einsum(equation, weight, x[..., :modes_0, -modes_1:])
+        hl = torch.einsum(equation, weight, x[..., -modes_0:, :modes_1])
+        hh = torch.einsum(equation, weight, x[..., -modes_0:, -modes_1:])
 
-        low = tf.concat([ll, lh], axis=-1)
-        high = tf.concat([hl, hh], axis=-1)
-        return tf.concat([low, high], axis=-2)
+        low = torch.cat([ll, lh], dim=-1)
+        high = torch.cat([hl, hh], dim=-1)
+        return torch.cat([low, high], dim=-2)
 
-    def _freq_conv3d(self, kernel, x):
-        equation = 'ioz,bidhw->bozdhw'  # z: heads
+    def freq_conv3d(self, kernel, x):
+        equation = 'zoi,bidhw->bzodhw'  # z: heads
         modes_0, modes_1, modes_2 = self.num_modes
 
-        lll = tf.einsum(equation, kernel, x[..., :modes_0, :modes_1, :modes_2])
-        lhl = tf.einsum(equation, kernel, x[..., :modes_0, -modes_1:, :modes_2])
-        hll = tf.einsum(equation, kernel, x[..., -modes_0:, :modes_1, :modes_2])
-        hhl = tf.einsum(equation, kernel, x[..., -modes_0:, -modes_1:, :modes_2])
-        llh = tf.einsum(equation, kernel, x[..., :modes_0, :modes_1, -modes_2:])
-        lhh = tf.einsum(equation, kernel, x[..., :modes_0, -modes_1:, -modes_2:])
-        hlh = tf.einsum(equation, kernel, x[..., -modes_0:, :modes_1, -modes_2:])
-        hhh = tf.einsum(equation, kernel, x[..., -modes_0:, -modes_1:, -modes_2:])
+        lll = torch.einsum(equation, kernel, x[..., :modes_0, :modes_1, :modes_2])
+        lhl = torch.einsum(equation, kernel, x[..., :modes_0, -modes_1:, :modes_2])
+        hll = torch.einsum(equation, kernel, x[..., -modes_0:, :modes_1, :modes_2])
+        hhl = torch.einsum(equation, kernel, x[..., -modes_0:, -modes_1:, :modes_2])
+        llh = torch.einsum(equation, kernel, x[..., :modes_0, :modes_1, -modes_2:])
+        lhh = torch.einsum(equation, kernel, x[..., :modes_0, -modes_1:, -modes_2:])
+        hlh = torch.einsum(equation, kernel, x[..., -modes_0:, :modes_1, -modes_2:])
+        hhh = torch.einsum(equation, kernel, x[..., -modes_0:, -modes_1:, -modes_2:])
 
         # Combine along spatial dim 2
-        ll = tf.concat([lll, llh], axis=-1)
-        lh = tf.concat([lhl, lhh], axis=-1)
-        hl = tf.concat([hll, hlh], axis=-1)
-        hh = tf.concat([hhl, hhh], axis=-1)
+        ll = torch.cat([lll, llh], dim=-1)
+        lh = torch.cat([lhl, lhh], dim=-1)
+        hl = torch.cat([hll, hlh], dim=-1)
+        hh = torch.cat([hhl, hhh], dim=-1)
 
         # Combine along spatial dim 1
-        low = tf.concat([ll, lh], axis=-2)
-        high = tf.concat([hl, hh], axis=-2)
+        low = torch.cat([ll, lh], dim=-2)
+        high = torch.cat([hl, hh], dim=-2)
 
         # Combine along spatial dim 0
-        return tf.concat([low, high], axis=-3)
+        return torch.cat([low, high], dim=-3)
 
-    def _inverse2d(self, x, spatial_shape):
+    @staticmethod
+    def freq_conv2d_notransform(weight, x):
+        equation = 'zoi,bihw->bzohw'  # z: heads
+        return torch.einsum(equation, weight, x)
+
+    @staticmethod
+    def freq_conv3d_notransform(kernel, x):
+        equation = 'zoi,bidhw->bzodhw'  # z: heads
+        return torch.einsum(equation, kernel, x)
+
+    def inverse2d(self, x, spatial_shape):
         s0, s1 = spatial_shape
         modes_0, modes_1 = self.num_modes
-        ndim = len(spatial_shape) + 2
 
         ll = x[..., :modes_0, :modes_1]
         lh = x[..., :modes_0, -modes_1:]
@@ -314,27 +353,22 @@ class HartleyMultiHeadAttention(Layer):
         hh = x[..., -modes_0:, -modes_1:]
 
         # Padding
-        pad_shape = tf.concat([tf.shape(x)[:2], [modes_0, s1 - 2 * modes_1]], axis=0)
-        pad_zeros = tf.zeros(pad_shape, dtype=x.dtype)
-        low = tf.concat([ll, pad_zeros, lh], axis=-1)
-        high = tf.concat([hl, pad_zeros, hh], axis=-1)
+        pad_shape = x.shape[:2] + (modes_0, s1 - 2 * modes_1)
+        pad_zeros = torch.zeros(pad_shape, dtype=x.dtype, device=x.device)
+        low = torch.cat([ll, pad_zeros, lh], dim=-1)
+        high = torch.cat([hl, pad_zeros, hh], dim=-1)
 
-        pad_shape = tf.concat([tf.shape(x)[:2], [s0 - 2 * modes_0, s1]], axis=0)
-        pad_zeros = tf.zeros(pad_shape, dtype=x.dtype)
-        x = tf.concat([low, pad_zeros, high], axis=-2)
+        pad_shape = x.shape[:2] + (s0 - 2 * modes_0, s1)
+        pad_zeros = torch.zeros(pad_shape, dtype=x.dtype, device=x.device)
+        x = torch.cat([low, pad_zeros, high], dim=-2)
 
-        x = dht2d(x, is_inverse=True)
-
-        # Convert back to channel-last
-        perm = [0] + list(range(2, ndim)) + [1]  # (b, spatial, c)
-        x = tf.transpose(x, perm=perm)
+        x = dht2(x, is_inverse=True)
 
         return x
 
-    def _inverse3d(self, x, spatial_shape):
+    def inverse3d(self, x, spatial_shape):
         s0, s1, s2 = spatial_shape
         modes_0, modes_1, modes_2 = self.num_modes
-        ndim = len(spatial_shape) + 2
 
         lll = x[..., :modes_0, :modes_1, :modes_2]
         lhl = x[..., :modes_0, -modes_1:, :modes_2]
@@ -348,86 +382,65 @@ class HartleyMultiHeadAttention(Layer):
         # Padding needs to be done manually as ifft only pads at the end
 
         # Padding along spatial dim 2, shape = (b, c, modes_0, modes_1, s2)
-        pad_shape = tf.concat([tf.shape(x)[:2], [modes_0, modes_1, s2 - 2 * modes_2]], axis=0)
-        pad_zeros = tf.zeros(pad_shape, dtype=x.dtype)
-        ll = tf.concat([lll, pad_zeros, llh], axis=-1)
-        lh = tf.concat([lhl, pad_zeros, lhh], axis=-1)
-        hl = tf.concat([hll, pad_zeros, hlh], axis=-1)
-        hh = tf.concat([hhl, pad_zeros, hhh], axis=-1)
+        pad_shape = x.shape[:2] + (modes_0, modes_1, s2 - 2 * modes_2)
+        pad_zeros = torch.zeros(pad_shape, dtype=x.dtype, device=x.device)
+        ll = torch.cat([lll, pad_zeros, llh], dim=-1)
+        lh = torch.cat([lhl, pad_zeros, lhh], dim=-1)
+        hl = torch.cat([hll, pad_zeros, hlh], dim=-1)
+        hh = torch.cat([hhl, pad_zeros, hhh], dim=-1)
 
         # Padding along spatial dim 1, shape = (b, c, modes_0, s1, s2)
-        pad_shape = tf.concat([tf.shape(x)[:2], [modes_0, s1 - 2 * modes_1, s2]], axis=0)
-        pad_zeros = tf.zeros(pad_shape, dtype=x.dtype)
-        low = tf.concat([ll, pad_zeros, lh], axis=-2)
-        high = tf.concat([hl, pad_zeros, hh], axis=-2)
+        pad_shape = x.shape[:2] + (modes_0, s1 - 2 * modes_1, s2)
+        pad_zeros = torch.zeros(pad_shape, dtype=x.dtype, device=x.device)
+        low = torch.cat([ll, pad_zeros, lh], dim=-2)
+        high = torch.cat([hl, pad_zeros, hh], dim=-2)
 
         # Padding along spatial dim 0, shape = (b, c, s0, s1, s2)
-        pad_shape = tf.concat([tf.shape(x)[:2], [s0 - 2 * modes_0, s1, s2]], axis=0)
-        pad_zeros = tf.zeros(pad_shape, dtype=x.dtype)
-        x = tf.concat([low, pad_zeros, high], axis=-3)
+        pad_shape = x.shape[:2] + (s0 - 2 * modes_0, s1, s2)
+        pad_zeros = torch.zeros(pad_shape, dtype=x.dtype, device=x.device)
+        x = torch.cat([low, pad_zeros, high], dim=-3)
 
-        x = dht3d(x, is_inverse=True)
-
-        # Convert back to channel-last
-        perm = [0] + list(range(2, ndim)) + [1]  # (b, spatial, c)
-        x = tf.transpose(x, perm=perm)
+        x = dht3(x, is_inverse=True)
 
         return x
 
     @staticmethod
-    def _spatial_flatten(x, has_batch_axis=True):
-        in_shape = tuple(x.shape)
-        if has_batch_axis:
-            shape = (-1,) + in_shape[1:3] + (np.prod(in_shape[3:]),)
-        else:
-            shape = in_shape[:2] + (np.prod(in_shape[2:]),)
-        return tf.reshape(x, shape)
+    def spatial_flatten(x):
+        shape = (-1,) + x.shape[1:3] + (np.prod(x.shape[3:]),)
+        return torch.reshape(x, shape)
 
-    def get_config(self):
-        config = {
-            'num_heads': self.num_heads,
-            'key_dim': self.key_dim,
-            'num_modes': self.num_modes,
-            'patch_size': self.patch_size,
-            'attention_activation': self.attention_activation,
-            'value_dim': self.value_dim,
-            'use_bias': self.use_bias,
-            'kernel_initializer': initializers.serialize(self.kernel_initializer),
-            'bias_initializer': initializers.serialize(self.bias_initializer),
-            'kernel_regularizer': regularizers.serialize(self.kernel_regularizer),
-            'bias_regularizer': regularizers.serialize(self.bias_regularizer),
-            'kernel_constraint': constraints.serialize(self.kernel_constraint),
-            'bias_constraint': constraints.serialize(self.bias_constraint),
-        }
-        base_config = super().get_config()
-        return {**base_config, **config}
+    @staticmethod
+    def dht(x):
+        ndim = x.ndim
+        assert ndim in (4, 5)
+        if ndim == 4:
+            return dht2(x)
+        return dht3(x)
 
 
 def grouping2d(x, patch_size):
     """Groups pixels into patches.
 
     Args:
-        x: Input tensor of shape (batch_size, num_channels, num_heads, height, width).
+        x: Input tensor of shape (batch_size, num_heads, num_channels, height, width).
         patch_size: Patch size.
 
     Returns:
         A reshaped tensor with each new pixel as a concatenation of the original pixels,
-        with shape (batch_size, num_grouped_channels, num_heads, num_patches_h, num_patches_w).
+        with shape (batch_size, num_heads, num_grouped_channels, num_patches_h, num_patches_w).
     """
     assert len(patch_size) == 2
 
     patch_h, patch_w = patch_size
-    _, c, z, h, w = x.shape  # Channel first in frequency domain, z is num_heads
+    _, z, c, h, w = x.shape  # z is num_heads
 
     assert h % patch_h == 0 and w % patch_w == 0
     num_h = h // patch_h
     num_w = w // patch_w
 
-    x = tf.reshape(
-        x, (-1, c, z, num_h, patch_h, num_w, patch_w)
-    )
-    x = tf.transpose(x, (0, 1, 4, 6, 2, 3, 5))
-    x = tf.reshape(x, (-1, c * patch_h * patch_w, z, num_h, num_w))
+    x = torch.reshape(x, (-1, z, c, num_h, patch_h, num_w, patch_w))
+    x = torch.permute(x, (0, 1, 2, 4, 6, 3, 5))  # (b, z, c, patch_h, patch_w, num_h, num_w)
+    x = torch.reshape(x, (-1, z, c * patch_h * patch_w, num_h, num_w))
 
     return x
 
@@ -436,23 +449,23 @@ def ungrouping2d(x, num_channels, patch_size):
     """Ungroups patches back to pixels.
 
     Args:
-        x: Input tensor of shape (batch_size, num_grouped_channels, num_heads, num_patches_h, num_patches_w).
+        x: Input tensor of shape (batch_size, num_heads, num_grouped_channels, num_patches_h, num_patches_w).
         num_channels: Number of original channels before grouping.
         patch_size: Patch size used for grouping.
 
     Returns:
         A reshaped tensor with the original shape before grouping,
-        with shape (batch_size, num_channels, num_heads, height, width).
+        with shape (batch_size, num_heads, num_channels, height, width).
     """
     assert len(patch_size) == 2
 
     patch_h, patch_w = patch_size
     c = num_channels
-    z, num_h, num_w = x.shape[2:]
+    _, z, _, num_h, num_w = x.shape
 
-    x = tf.reshape(x, (-1, c, patch_h, patch_w, z, num_h, num_w))
-    x = tf.transpose(x, (0, 1, 4, 5, 2, 6, 3))
-    x = tf.reshape(x, (-1, c, z, num_h * patch_h, num_w * patch_w))
+    x = torch.reshape(x, (-1, z, c, patch_h, patch_w, num_h, num_w))
+    x = torch.permute(x, (0, 1, 2, 5, 3, 6, 4))  # (b, z, c, num_h, patch_h, num_w, patch_w)
+    x = torch.reshape(x, (-1, z, c, num_h * patch_h, num_w * patch_w))
 
     return x
 
@@ -461,28 +474,26 @@ def grouping3d(x, patch_size):
     """Groups pixels into patches.
 
     Args:
-        x: Input tensor of shape (batch_size, num_channels, num_heads, depth, height, width).
+        x: Input tensor of shape (batch_size, num_heads, num_channels, depth, height, width).
         patch_size: Patch size.
 
     Returns:
         A reshaped tensor with each new pixel as a concatenation of the original pixels,
-        with shape (batch_size, num_grouped_channels, num_heads, num_patches_d, num_patches_h, num_patches_w).
+        with shape (batch_size, num_heads, num_grouped_channels, num_patches_d, num_patches_h, num_patches_w).
     """
     assert len(patch_size) == 3
 
     patch_d, patch_h, patch_w = patch_size
-    _, c, z, d, h, w = x.shape  # Channel first in frequency domain, z is num_heads
+    _, z, c, d, h, w = x.shape  # z is num_heads
 
     assert d % patch_d == 0 and h % patch_h == 0 and w % patch_w == 0
     num_d = d // patch_d
     num_h = h // patch_h
     num_w = w // patch_w
 
-    x = tf.reshape(
-        x, (-1, c, z, num_d, patch_d, num_h, patch_h, num_w, patch_w)
-    )
-    x = tf.transpose(x, (0, 1, 4, 6, 8, 2, 3, 5, 7))
-    x = tf.reshape(x, (-1, c * patch_d * patch_h * patch_w, z, num_d, num_h, num_w))
+    x = torch.reshape(x, (-1, z, c, num_d, patch_d, num_h, patch_h, num_w, patch_w))
+    x = torch.permute(x, (0, 1, 2, 4, 6, 8, 3, 5, 7))  # (b, z, c, patch_d, patch_h, patch_w, num_d, num_h, num_w)
+    x = torch.reshape(x, (-1, z, c * patch_d * patch_h * patch_w, num_d, num_h, num_w))
 
     return x
 
@@ -491,23 +502,23 @@ def ungrouping3d(x, num_channels, patch_size):
     """Ungroups patches back to pixels.
 
     Args:
-        x: Input tensor of shape (batch_size, num_grouped_channels, num_heads, num_patches_d,
-            num_patches_h, num_patches_w).
+        x: Input tensor of shape
+            (batch_size, num_heads, num_grouped_channels, num_patches_d, num_patches_h, num_patches_w).
         num_channels: Number of original channels before grouping.
         patch_size: Patch size used for grouping.
 
     Returns:
         A reshaped tensor with the original shape before grouping,
-        with shape (batch_size, num_channels, num_heads, depth, height, width).
+        with shape (batch_size, num_heads, num_channels, depth, height, width).
     """
     assert len(patch_size) == 3
 
     patch_d, patch_h, patch_w = patch_size
     c = num_channels
-    z, num_d, num_h, num_w = x.shape[2:]
+    _, z, _, num_d, num_h, num_w = x.shape
 
-    x = tf.reshape(x, (-1, c, patch_d, patch_h, patch_w, z, num_d, num_h, num_w))
-    x = tf.transpose(x, (0, 1, 5, 6, 2, 7, 3, 8, 4))
-    x = tf.reshape(x, (-1, c, z, num_d * patch_d, num_h * patch_h, num_w * patch_w))
+    x = torch.reshape(x, (-1, z, c, patch_d, patch_h, patch_w, num_d, num_h, num_w))
+    x = torch.permute(x, (0, 1, 2, 6, 3, 7, 4, 8, 5))  # (b, z, c, num_d, patch_d, num_h, patch_h, num_w, patch_w)
+    x = torch.reshape(x, (-1, z, c, num_d * patch_d, num_h * patch_h, num_w * patch_w))
 
     return x

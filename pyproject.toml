@@ -1,0 +1,36 @@
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "multimodal_3d_image_segmentation"
+version = "0.1.0"
+authors = [
+    { name = "Ken C. L. Wong", email = "clwong@us.ibm.com" },
+]
+description = "A package for 2D and 3D image segmentation."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "torch",
+    "torchview",
+    "torchinfo",
+    "SimpleITK",
+    "matplotlib",
+    "pandas",
+    "natsort",
+    "scipy",
+    "surface-distance@git+https://github.com/deepmind/surface-distance",
+]
+
+[tool.poetry]
+# As we have nonstandard folder structure
+packages = [
+    { include = "experiments", to = "multimodal_3d_image_segmentation" },
+    { include = "nets", to = "multimodal_3d_image_segmentation" },
+]

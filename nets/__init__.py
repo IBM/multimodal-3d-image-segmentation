@@ -1,5 +1,5 @@
 #
-# Copyright 2023 IBM Inc. All rights reserved
+# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
@@ -8,6 +8,7 @@
 Author: Ken C. L. Wong
 """
 
-from nets.architectures import VNetDS, NeuralOperatorSeg, HartleyMHASeg
+from .architectures import VNetDS, NeuralOperatorSeg, HartleyMHASeg
+from .hnosegxs import HNOSegXS
 
 __author__ = 'Ken C. L. Wong'

@@ -1,20 +1,22 @@
 #
-# Copyright 2024 IBM Inc. All rights reserved
+# Copyright 2023 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
 import math
 
-from torch.utils.data import DataLoader
+from keras.src.trainers.data_adapters.py_dataset_adapter import PyDatasetAdapter
 
 from .dataset import MultimodalImageDataset, ImageTransform
+
 
 __author__ = 'Ken C. L. Wong'
 
 
-class InputData:
+class InputData(object):
     """Organized input data for creating generators.
-    With `num_workers` >= 1, the generators are threaded thus run in parallel with other processes.
+    With workers >= 1, the generators are threaded thus run in parallel
+    with other processes.
     Note that the label images are also considered as a modality associated with `idx_y_modalities`.
 
     Args:
@@ -30,8 +32,10 @@ class InputData:
             If it is None, the generators only generate x.
         x_processing: A function that performs custom processing on x, e.g. data normalization (default: None).
         batch_size: Batch size (default: 1).
-        num_workers: Number of parallel processes (default: 1).
-            If 0, data will be loaded in the main process.
+        max_queue_size: Maximum queue size (default: 1).
+        workers: Number of parallel processes (default: 1).
+            If 0, no threading or multiprocessing is used.
+        use_multiprocessing: Use multiprocessing if True, otherwise threading (default: False).
         transform_kwargs: Dict of keyword arguments for ImageTransform (default: None).
             See `.dataset.ImageTransform` for details.
     """
@@ -44,7 +48,9 @@ class InputData:
                  idx_y_modalities=None,
                  x_processing=None,
                  batch_size=1,
-                 num_workers=1,
+                 max_queue_size=1,
+                 workers=1,
+                 use_multiprocessing=False,
                  transform_kwargs=None,
                  ):
         self.reader = reader or (lambda x: x)
@@ -55,66 +61,68 @@ class InputData:
         self.idx_y_modalities = idx_y_modalities
         self.x_processing = x_processing
         self.batch_size = batch_size
-        self.num_workers = num_workers
+        self.max_queue_size = max_queue_size
+        self.workers = workers
+        self.use_multiprocessing = use_multiprocessing
         self.transform_kwargs = transform_kwargs
-
-        assert self.idx_x_modalities is not None
 
     def _get_flow(self, data_lists, shuffle=False, transform_kwargs=None):
         transform = ImageTransform(**transform_kwargs) if transform_kwargs is not None else None
         dataset = MultimodalImageDataset(
             data_lists,
+            self.batch_size,
             reader=self.reader,
             idx_x_modalities=self.idx_x_modalities,
             idx_y_modalities=self.idx_y_modalities,
             x_processing=self.x_processing,
             transform=transform,
+            workers=self.workers,
+            use_multiprocessing=self.use_multiprocessing,
+            max_queue_size=self.max_queue_size,
         )
 
-        generator = DataLoader(
+        adapter = PyDatasetAdapter(
             dataset,
-            batch_size=self.batch_size,
-            shuffle=shuffle,
-            num_workers=self.num_workers,
-            persistent_workers=True,
+            shuffle=shuffle
         )
 
-        return generator
+        return adapter
 
     def get_train_flow(self, shuffle=True):
-        """Gets the generator for training.
+        """Gets the PyDatasetAdapter for training.
 
         Args:
             shuffle: If True (default), the data are shuffled in each epoch.
 
         Returns:
-            A generator.
+            A PyDatasetAdapter that can create an iterator for one epoch by get_numpy_iterator().
         """
         return self._get_flow(self.data_lists_train, shuffle=shuffle, transform_kwargs=self.transform_kwargs)
 
     def get_valid_flow(self):
-        """Gets the generator for validation.
+        """Gets the PyDatasetAdapter for validation.
         No data shuffling and augmentation.
 
         Returns:
-            A generator.
+            A PyDatasetAdapter that can create an iterator for one epoch by get_numpy_iterator().
         """
         return self._get_flow(self.data_lists_valid)
 
     def get_test_flow(self):
-        """Gets the generator for testing.
+        """Gets the PyDatasetAdapter for testing.
         No data shuffling and augmentation.
 
         Returns:
-            A generator.
+            A PyDatasetAdapter that can create an iterator for one epoch by get_numpy_iterator().
         """
         return self._get_flow(self.data_lists_test)
 
     def _get_num_batches(self, data):
         if data is None:
             return 0
+
         num_samples = len(data[0])
-        return int(math.ceil(num_samples / self.batch_size))
+        return math.ceil(num_samples / self.batch_size)
 
     def get_train_num_batches(self):
         data = self.data_lists_train
@@ -141,11 +149,3 @@ class InputData:
 
     def get_test_image_size(self):
         return self._get_image_size(self.data_lists_test)
-
-    def get_num_x_modalities(self):
-        return len(self.idx_x_modalities)
-
-    def get_num_y_modalities(self):
-        if self.idx_y_modalities is None:
-            return 0
-        return len(self.idx_y_modalities)

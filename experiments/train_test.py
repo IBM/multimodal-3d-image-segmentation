@@ -1,5 +1,5 @@
 #
-# Copyright 2023 IBM Inc. All rights reserved
+# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache2.0
 #
 
@@ -7,7 +7,7 @@
 
 Author: Ken C. L. Wong
 """
-
+import copy
 import os
 import matplotlib
 if 'DISPLAY' not in os.environ:
@@ -16,29 +16,34 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 from os.path import join
-import pandas as pd
+import re
 
-from keras.utils import plot_model
-import tensorflow as tf
+import torch
+import torchview
 
-from data_io.input_data import InputData
-from utils import remap_labels, to_categorical, save_output, save_model_summary
+from .data_io.input_data import InputData
+from .utils import remap_labels, to_categorical, save_output, save_model_summary
 
 
 __author__ = 'Ken C. L. Wong'
 
 
 def training(
-        model,
+        model: torch.nn.Module,
         input_data: InputData,
         output_dir,
+        loss_fn,
+        optimizer: torch.optim.Optimizer,
+        scheduler=None,
         label_mapping=None,
         num_epochs=100,
         selection_epoch_portion=0.8,
-        is_save_model=True,
+        checkpoint_epoch=10,
         is_plot_model=False,
         is_print=True,
         plot_epoch_portion=None,
+        use_autocast=False,
+        device=None,
 ):
     """Trains a model.
 
@@ -46,138 +51,207 @@ def training(
         model: A model to be trained.
         input_data: InputData.
         output_dir: Output directory, should already be created by the calling function.
+        loss_fn: The loss function.
+        optimizer: The optimizer.
+        scheduler: A learning rate scheduler.
         label_mapping: A dict for label mapping if given (default: None).
         num_epochs: Number of epochs (default: 100).
         selection_epoch_portion: The models after this portion of num_epochs are
             candidates for the final model (default: 0.8).
-        is_save_model: The trained model is saved if True (default).
+        checkpoint_epoch: The number of epochs to save checkpoint (default: 10).
+            Checkpoint is also saved with the current best model.
         is_plot_model: Plots the model architecture if True (default: False).
         is_print: Print info or not (default: True).
         plot_epoch_portion: The losses after this portion of num_epochs are plotted if not None (default: None).
+        use_autocast: If True, PyTorch autocast is used (default: False).
+            Autocast may raise RuntimeError with cuFFT.
+        device: Device index to select, e.g., 'cuda', 'cpu' (default: None).
 
     Returns:
         The trained model.
     """
-    if os.path.exists(join(output_dir, 'stdout.txt')):
-        raise RuntimeError('stdout.txt already exists!')  # Avoid accidents
+    model_dir = join(output_dir, 'model')
+    model_path = join(model_dir, 'model.pt')
+    chkpt_path = join(model_dir, 'checkpoint.pt')
+    stdout_file = join(output_dir, 'stdout.txt')
+    os.makedirs(model_dir, exist_ok=True)
 
-    num_epochs = int(num_epochs)
-    train_num_batches = input_data.get_train_num_batches()
-    valid_num_batches = input_data.get_valid_num_batches()
+    scaler = torch.amp.GradScaler() if use_autocast else None
+    model.to(device)
 
-    if is_print:
-        print('\ntrain_num_batches:', train_num_batches)
-        print('valid_num_batches:', valid_num_batches)
-        print()
-    with open(join(output_dir, 'stdout.txt'), 'a') as f:
-        print('train_num_batches:', train_num_batches, file=f)
-        print('valid_num_batches:', valid_num_batches, file=f)
-        print(file=f)
+    if os.path.exists(chkpt_path):
+        start_epoch, min_loss, best_epoch = load_checkpoint(chkpt_path, model, optimizer, scheduler, scaler, device)
+        start_epoch += 1
+        if start_epoch >= num_epochs:
+            raise RuntimeError(f'Checkpoint detected, but start_epoch ({start_epoch}) >= num_epochs ({num_epochs})')
+        if is_print:
+            print(f'Checkpoint loaded for epoch {start_epoch}')
 
-    # Save model summary
-    save_model_summary(model, join(output_dir, 'model_summary.txt'))
-    if is_plot_model:
-        plot_model(model, show_shapes=True, show_layer_names=True, to_file=join(output_dir, 'model.pdf'))
+        # Remove stdout.txt contents after the last checkpoint
+        with open(stdout_file) as f:
+            lines = f.readlines()[::-1]
+        idx = None
+        for i in range(len(lines)):
+            if 'checkpoint' in lines[i]:
+                idx = i
+                break
+        lines = lines[idx:][::-1]
+        with open(stdout_file, 'w') as f:
+            f.writelines(lines)
+    else:
+        start_epoch = 0
+        min_loss = float('inf')
+        best_epoch = None
 
-    train_flow = input_data.get_train_flow()
+        train_num_batches = input_data.get_train_num_batches()
+        valid_num_batches = input_data.get_valid_num_batches()
+        if is_print:
+            print('\ntrain_num_batches:', train_num_batches)
+            print('valid_num_batches:', valid_num_batches)
+            print()
+        with open(stdout_file, 'a') as f:
+            print('train_num_batches:', train_num_batches, file=f)
+            print('valid_num_batches:', valid_num_batches, file=f)
+            print(file=f)
+
+        # Save model summary. Use a copy of the model to avoid modifying the model.
+        input_size = (1, model.in_channels) + input_data.get_train_image_size()
+        save_model_summary(copy.deepcopy(model), input_size, join(output_dir, 'model_summary.txt'))
+        if is_plot_model:
+            graph = torchview.draw_graph(copy.deepcopy(model), input_size=input_size, device='meta')
+            graph.visual_graph.render(filename='model_graph', directory=output_dir, cleanup=True, format='pdf')
+
+    train_flow = input_data.get_train_flow(shuffle=True)
     valid_flow = input_data.get_valid_flow()
 
-    num_labels = model.output_shape[-1]
+    num_labels = model.out_channels  # Please provide out_channels in your model
 
-    @tf.function
-    def train_step(inputs, y_true):
-        with tf.GradientTape() as tape:
-            y_pred = model(inputs, training=True)
-            loss_val = model.loss(y_true, y_pred)
-        grads = tape.gradient(loss_val, model.trainable_weights)
-        model.optimizer.apply(grads, model.trainable_weights)
-        return loss_val
-
-    @tf.function
-    def test_step(inputs, y_true):
-        y_pred = model(inputs, training=False)
-        return model.loss(y_true, y_pred)
+    if use_autocast:
+        assert device is not None
+        device = torch.device(device)
 
     if is_print:
         print('Training started')
+        print(output_dir)
 
     start_time = time.time()
 
     # Epoch average loss
-    train_loss = []
-    valid_loss = []
-
-    min_loss = float('inf')
-    best_epoch = None
-    best_weights = None
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         #
         # Training phase
 
+        model.train()
         train_loss_epoch = []
-        for x, y in train_flow.get_numpy_iterator():  # This iterator only works for this loop
+        for x, y in train_flow:
+            x = x.to(device)
+            y = y.to(device)
+
             if label_mapping is not None:
                 y = remap_labels(y, label_mapping)
             y = to_categorical(y, num_labels)
-            loss = train_step(x, y)
-            train_loss_epoch.append(float(loss))
-        train_loss.append(np.mean(train_loss_epoch))
 
+            if use_autocast:
+                with torch.autocast(device_type=device.type):
+                    y_pred = model(x)
+                    loss = loss_fn(y_pred, y)
+            else:
+                y_pred = model(x)
+                loss = loss_fn(y_pred, y)
+
+            train_loss_epoch.append(loss.item())
+
+            optimizer.zero_grad()
+            if use_autocast:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+
+            if scheduler is not None:
+                scheduler.step()
+
+        train_loss = np.mean(train_loss_epoch)
         if is_print:
             print('\n-------------------------')
             print(f'Epoch: {epoch}')
-            print(f'train_loss: {train_loss[-1]}')
-        with open(join(output_dir, 'stdout.txt'), 'a') as f:
+            print(f'train_loss: {train_loss}')
+        with open(stdout_file, 'a') as f:
             print('\n-------------------------', file=f)
             print(f'Epoch: {epoch}', file=f)
-            print(f'train_loss: {train_loss[-1]}', file=f)
+            print(f'train_loss: {train_loss}', file=f)
 
         #
         # Validation phase
 
+        model.eval()
         valid_loss_epoch = []
-        for x, y in valid_flow.get_numpy_iterator():  # This iterator only works for this loop
+        for x, y in valid_flow:
+            x = x.to(device)
+            y = y.to(device)
+
             if label_mapping is not None:
                 y = remap_labels(y, label_mapping)
             y = to_categorical(y, num_labels)
-            loss = test_step(x, y)
-            valid_loss_epoch.append(float(loss))
-        valid_loss.append(np.mean(valid_loss_epoch))
 
+            with torch.no_grad():
+                if use_autocast:
+                    with torch.autocast(device_type=device.type):
+                        y_pred = model(x)
+                        loss = loss_fn(y_pred, y)
+                else:
+                    y_pred = model(x)
+                    loss = loss_fn(y_pred, y)
+
+                valid_loss_epoch.append(loss.item())
+
+        valid_loss = np.mean(valid_loss_epoch)
         if is_print:
-            print(f'valid_loss: {valid_loss[-1]}')
-        with open(join(output_dir, 'stdout.txt'), 'a') as f:
-            print(f'valid_loss: {valid_loss[-1]}', file=f)
+            print(f'valid_loss: {valid_loss}')
+        with open(stdout_file, 'a') as f:
+            print(f'valid_loss: {valid_loss}', file=f)
+
+        if (epoch + 1) % checkpoint_epoch == 0:
+            save_checkpoint(chkpt_path, epoch, model, optimizer, scheduler, min_loss, best_epoch, scaler)
+            if is_print:
+                print('Standard checkpoint saved.')
+            with open(stdout_file, 'a') as f:
+                print('Standard checkpoint saved.', file=f)
 
         selection_epoch = int(num_epochs * selection_epoch_portion)
-        if (epoch > selection_epoch or epoch == num_epochs - 1) and valid_loss[-1] < min_loss:
-            min_loss = valid_loss[-1]
+        if (epoch > selection_epoch or epoch == num_epochs - 1) and valid_loss < min_loss:
+            min_loss = valid_loss
             best_epoch = epoch
-            best_weights = model.get_weights()
-            if is_save_model:
-                save_model(model, join(output_dir, 'model', 'model.keras'))
+            torch.save(model.state_dict(), model_path)
+            if (epoch + 1) % checkpoint_epoch != 0:  # Avoid saving twice
+                save_checkpoint(chkpt_path, epoch, model, optimizer, scheduler, min_loss, best_epoch, scaler)
+                if is_print:
+                    print('Best checkpoint saved.')
+                with open(stdout_file, 'a') as f:
+                    print('Best checkpoint saved.', file=f)
 
     end_time = time.time()
 
-    if best_weights is not None:
-        model.set_weights(best_weights)
+    if best_epoch is not None:
+        model.load_state_dict(torch.load(model_path, weights_only=True, map_location=device))
     else:  # num_epochs == 0, i.e., no training
-        if is_save_model:
-            save_model(model, join(output_dir, 'model', 'model.keras'))
+        torch.save(model.state_dict(), model_path)
 
     # Plot losses
-    start_epoch = int(num_epochs * plot_epoch_portion) if plot_epoch_portion is not None else 0
-    losses = [train_loss, valid_loss]
+    start_plot_epoch = int(num_epochs * plot_epoch_portion) if plot_epoch_portion is not None else 0
+    losses = get_losses_from_file(stdout_file)
     styles = ['r', 'b--']
     labels = ['Train loss', 'Valid loss']
     output_file = join(output_dir, 'plot_loss.pdf')
-    plot_losses(num_epochs, start_epoch, losses, styles, labels, output_file)
+    plot_losses(num_epochs, start_plot_epoch, losses, styles, labels, output_file)
 
     if is_print:
         print(f'\nTime used: {end_time - start_time:.2f} seconds.')
         print(f'Best epoch: {best_epoch}')
         print(f'Min loss: {min_loss}')
-    with open(join(output_dir, 'stdout.txt'), 'a') as f:
+    with open(stdout_file, 'a') as f:
         print(f'\nTime used: {end_time - start_time:.2f} seconds.', file=f)
         print(f'Best epoch: {best_epoch}', file=f)
         print(f'Min loss: {min_loss}', file=f)
@@ -185,14 +259,57 @@ def training(
     return model
 
 
-def plot_losses(num_epochs, start_epoch, losses, styles, labels, output_file):
+def save_checkpoint(chkpt_path, epoch, model, optimizer, scheduler, min_loss, best_epoch, scaler):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'min_loss': min_loss,
+        'best_epoch': best_epoch,
+    }
+    if scaler is not None:
+        checkpoint['scaler_state_dict'] = scaler.state_dict()
+    torch.save(checkpoint, chkpt_path)
+
+
+def load_checkpoint(chkpt_path, model, optimizer, scheduler, scaler, device):
+    checkpoint = torch.load(chkpt_path, weights_only=False, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    if scaler is not None:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+    epoch = checkpoint['epoch']
+    min_loss = checkpoint['min_loss']
+    best_epoch = checkpoint['best_epoch']
+    return epoch, min_loss, best_epoch
+
+
+def get_losses_from_file(filename):
+    with open(filename) as f:
+        lines = f.readlines()
+
+    train_loss = []
+    valid_loss = []
+    for ln in lines:
+        if 'train_loss' in ln:
+            train_loss.append(float(re.findall('train_loss: (.+)', ln)[0]))
+        elif 'valid_loss' in ln:
+            valid_loss.append(float(re.findall('valid_loss: (.+)', ln)[0]))
+
+    assert len(train_loss) == len(valid_loss)
+    return train_loss, valid_loss
+
+
+def plot_losses(num_epochs, start_plot_epoch, losses, styles, labels, output_file):
     """Plots the evolutions of losses."""
     fig, ax = plt.subplots()
     fig.set_size_inches(10, 5)
 
-    x = np.arange(num_epochs)[start_epoch:]
+    x = np.arange(num_epochs)[start_plot_epoch:]
     for i in range(len(losses)):
-        ax.plot(x, losses[i][start_epoch:], styles[i], label=labels[i])
+        ax.plot(x, losses[i][start_plot_epoch:], styles[i], label=labels[i])
 
     plt.xlabel('Epoch')
     plt.ylabel('Value')
@@ -213,13 +330,14 @@ def plot_losses(num_epochs, start_epoch, losses, styles, labels, output_file):
 
 
 def testing(
-        model,
+        model: torch.nn.Module,
         input_data: InputData,
         output_dir,
         label_mapping=None,
-        save_image=False,
         output_origin=None,
         is_print=True,
+        use_autocast=False,
+        device=None,
 ):
     """Performs prediction on testing data.
 
@@ -228,13 +346,16 @@ def testing(
         input_data: InputData.
         output_dir: Output directory (full path).
         label_mapping: A dict for label mapping (default: None).
-        save_image: True if saving images (default: False).
-        output_origin: Output origin for nifty saving (default: None).
+        output_origin: Output origin (x, y, z) for nifty saving (default: None).
         is_print: Print info or not (default: True).
+        use_autocast: If True, PyTorch autocast is used (default: False).
+            Autocast may raise RuntimeError with cuFFT.
+        device: Device index to select, e.g., 'cuda', 'cpu' (default: None).
 
     Returns:
         All ground truths (y_true) and predictions (y_pred).
     """
+    assert input_data.batch_size == 1
     os.makedirs(output_dir, exist_ok=True)
 
     test_num_batches = input_data.get_test_num_batches()
@@ -244,219 +365,62 @@ def testing(
         print('test_num_batches:', test_num_batches)
         print()
 
-    test_flow = input_data.get_test_flow()
+    if use_autocast:
+        assert device is not None
+        if not isinstance(device, torch.device):
+            device = torch.device(device)
 
-    @tf.function
-    def test_step(inputs):
-        return model(inputs, training=False)
+    test_flow = input_data.get_test_flow()
+    model.to(device)
+    model.eval()
 
     if is_print:
         print('Testing started')
+        print(output_dir)
 
     start_time = time.time()
 
     predict_times = []
-    y_true = []
-    y_pred = []
-    for xy in test_flow.get_numpy_iterator():  # xy is always a tuple because of PyDatasetAdapter
-        if len(xy) == 2:
-            x, y = xy
-            y_true.append(np.asarray(y, dtype=np.int16)[..., 0])  # Last dimension of size 1 is ignored
-        else:
-            x = xy[0]
-
+    for i, xy in enumerate(test_flow):
         s_time = time.time()
-        yp = test_step(x).numpy()
+
+        y_true = None
+        if isinstance(xy, (tuple, list)):
+            x, y = xy
+            y_true = np.asarray(y, dtype=np.uint8)[0, 0]  # (1, 1, D, H, W) to (D, H, W)
+        else:
+            x = xy
+        x = x.to(device)
+
+        with torch.no_grad():
+            if use_autocast:
+                with torch.autocast(device_type=device.type):
+                    yp = model(x)
+            else:
+                yp = model(x)
+
+        y_pred = np.asarray(yp.detach().to('cpu'))  # (1, C, D, H, W)
+
         e_time = time.time()
-        if y_pred:  # Skip the first iteration which involves model initialization
+
+        if y_true is not None:
+            save_output(y_true, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_true')
+        y_pred = y_pred.argmax(1).astype(np.uint8)[0]
+        if label_mapping is not None:
+            y_pred = remap_labels(y_pred, label_mapping)
+        save_output(y_pred, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_pred')
+
+        if i != 0:  # Skip the first iteration which involves model initialization
             predict_times.append(e_time - s_time)
-        y_pred.append(yp)
 
     end_time = time.time()
-
-    y_true = np.concatenate(y_true) if y_true else None
-    y_pred = np.concatenate(y_pred)
-
-    # Change to int label and remap if needed
-    y_pred = y_pred.argmax(-1).astype(np.int16)  # Last dimension is gone
-    if label_mapping is not None:
-        y_pred = remap_labels(y_pred, label_mapping)
-
-    if save_image:
-        for i, y in enumerate(y_pred):
-            save_output(y, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_pred')
-        if y_true is not None:
-            for i, y in enumerate(y_true):
-                save_output(y, data_lists_test, i, os.path.join(output_dir, 'images'), output_origin, '_true')
-
-    np.savez_compressed(join(output_dir, 'y_true_pred.npz'), y_true=y_true, y_pred=y_pred)
 
     if is_print:
         print(f'\nTime used: {end_time - start_time:.2f} seconds.')
         print(f'Average prediction time: {np.mean(predict_times)}')
-
-    with open(os.path.join(output_dir, 'prediction_time.txt'), 'w') as f:
+        print(f'max_memory_reserved: {torch.cuda.max_memory_reserved(device) / 1024 ** 2:.2f} MiB')
+        print(f'max_memory_allocated: {torch.cuda.max_memory_allocated(device) / 1024 ** 2:.2f} MiB')
+    with open(os.path.join(output_dir, 'prediction_time_memory.txt'), 'w') as f:
         print(f'Average prediction time: {np.mean(predict_times)}', file=f)
-
-    return y_true, y_pred
-
-
-def statistics(y_true, y_pred, y_list_test, output_dir, is_print=True):
-    """Computes and saves the statistics on given predictions and ground truths.
-    Sample-wise results are saved to a csv file, while average results are saved to a txt file.
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-        y_list_test: List of filenames correspond to the samples.
-        output_dir: Output directory (full path).
-        is_print: Print info if True (default).
-    """
-    dice_all = dice_coef(y_true, y_pred)  # (num_samples, num_labels)
-
-    num_labels = dice_all.shape[-1]
-    ids = pd.DataFrame([os.path.basename(fn) for fn in y_list_test])
-    df = [ids] + [pd.DataFrame(dice_all[:, i]) for i in range(num_labels)]
-    header = ['ID'] + [f'Label {lab}' for lab in np.unique(y_true)]
-
-    output_file = os.path.join(output_dir, 'results.csv')
-    pd.concat(df, axis=1).to_csv(output_file, sep=str('\t'), header=header, index=False, float_format=str('%.6f'))
-
-    dice_all = np.ma.array(dice_all, mask=np.isnan(dice_all))
-    dice_mean = list(dice_all.mean(0).filled(np.nan))
-    dice_std = list(dice_all.std(0).filled(np.nan))
-
-    if is_print:
-        print()
-        print('-------- Result statistics --------')
-        print(f'dice_mean: {dice_mean}')
-        print(f'dice_std: {dice_std}')
-
-    with open(os.path.join(output_dir, 'average_results.txt'), 'w') as f:
-        print('-------- Result statistics --------', file=f)
-        print(f'dice_mean: {dice_mean}', file=f)
-        print(f'dice_std: {dice_std}', file=f)
-        print(file=f)
-
-
-def statistics_regional(y_true, y_pred, y_list_test, output_dir, is_print=True):
-    """Computes and saves the statistics on given predictions and ground truths.
-    Labels are grouped into BraTS regions of 'whole tumor', 'tumor core', and 'enhancing tumor'.
-    Sample-wise results are saved to a csv file, while average results are saved to a txt file.
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-        y_list_test: List of filenames correspond to the samples.
-        output_dir: Output directory (full path).
-        is_print: Print info if True (default).
-    """
-    region_names = ['background', 'whole tumor', 'tumor core', 'enhancing tumor']
-    region_labels = [
-        [0],
-        [1, 2, 4],
-        [1, 4],
-        [4],
-    ]
-
-    def get_labels_union(y, target_labels):
-        output = None
-        for lab in target_labels:
-            if output is None:
-                output = (y == lab)
-            else:
-                output = output | (y == lab)
-        return np.asarray(output, dtype=int)
-
-    dice_all = []
-    for labs in region_labels:
-        yt = get_labels_union(y_true, labs)
-        yp = get_labels_union(y_pred, labs)
-        dice_all.append(dice_coef(yt, yp, labels=[1]))
-    dice_all = np.concatenate(dice_all, axis=1)  # (num_samples, num_labels)
-
-    num_labels = dice_all.shape[-1]
-    ids = pd.DataFrame([os.path.basename(fn) for fn in y_list_test])
-    df = [ids] + [pd.DataFrame(dice_all[:, i]) for i in range(num_labels)]
-    header = ['ID'] + region_names
-
-    output_file = os.path.join(output_dir, 'results_regional.csv')
-    pd.concat(df, axis=1).to_csv(output_file, sep=str('\t'), header=header, index=False, float_format=str('%.6f'))
-
-    dice_all = np.ma.array(dice_all, mask=np.isnan(dice_all))
-    dice_mean = list(dice_all.mean(0).filled(np.nan))
-    dice_std = list(dice_all.std(0).filled(np.nan))
-
-    if is_print:
-        print()
-        print('-------- Regional result statistics --------')
-        print(f'region_names: {region_names}')
-        print(f'dice_mean: {dice_mean}')
-        print(f'dice_std: {dice_std}')
-
-    with open(os.path.join(output_dir, 'average_results_regional.txt'), 'w') as f:
-        print('-------- Regional result statistics --------', file=f)
-        print(f'region_names: {region_names}', file=f)
-        print(f'dice_mean: {dice_mean}', file=f)
-        print(f'dice_std: {dice_std}', file=f)
-        print(file=f)
-
-
-def dice_coef(y_true, y_pred, labels=None, is_average=False):
-    """Computes the Dice coefficients of specified labels.
-
-    Args:
-        y_true: Ground truths. Can be bhw or bdhw with or without the last channel of size 1.
-        y_pred: Predictions. Can be bhw or bdhw with or without last channel of size 1.
-        labels: Labels for which the Dice coefficients are computed.
-        is_average: If True, the averaged Dice coefficients are returned with shape (num_labels,).
-            Otherwise, returns a 2D array of shape (b, num_labels) (default: False).
-
-    Returns:
-        The Dice coefficients of the labels.
-    """
-    y_true = y_true.reshape(len(y_true), -1)  # (b, num_pixels)
-    y_pred = y_pred.reshape(len(y_pred), -1)  # (b, num_pixels)
-    assert y_true.shape == y_pred.shape
-
-    if labels is None:
-        labels = np.unique(y_true)
-
-    # Compute Dice coefficients
-    dice_all = []
-    for y_true_img, y_pred_img in zip(y_true, y_pred):  # Loop through images
-        dice = []
-        for label in labels:
-            y_true_bin = (y_true_img == label)
-            y_pred_bin = (y_pred_img == label)
-            intersection = np.count_nonzero(y_true_bin & y_pred_bin)
-            y_true_count = np.count_nonzero(y_true_bin)
-            y_pred_count = np.count_nonzero(y_pred_bin)
-            if y_true_count:
-                dice.append(2 * intersection / (y_true_count + y_pred_count))
-            else:
-                dice.append(np.nan)  # label does not exist in y_true
-        dice_all.append(dice)
-
-    dice_all = np.ma.array(dice_all, mask=np.isnan(dice_all))  # (b, num_labels)
-
-    if is_average:
-        return dice_all.mean(0).filled(np.nan)
-    else:
-        return dice_all.filled(np.nan)
-
-
-def save_model(model, output_path):
-    """Saves a Keras model.
-
-    Args:
-        model: The model to be saved.
-        output_path: The full file path.
-    """
-    dirname = os.path.dirname(output_path)
-    os.makedirs(dirname, exist_ok=True)
-
-    if os.path.exists(output_path):
-        os.remove(output_path)  # To avoid occasional crashing when overwriting
-
-    model.save(str(output_path))
+        print(f'max_memory_reserved: {torch.cuda.max_memory_reserved(device) / 1024 ** 2:.2f} MiB', file=f)
+        print(f'max_memory_allocated: {torch.cuda.max_memory_allocated(device) / 1024 ** 2:.2f} MiB', file=f)
