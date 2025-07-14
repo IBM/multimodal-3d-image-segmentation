@@ -86,7 +86,7 @@ Although the above command runs both training and testing, the testing is perfor
 
 1. **HNOSeg-XS** (Please cite this paper if you use our models)
 
-   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “HNOSeg-XS: extremely small Hartley neural operator for efficient and resolution-robust 3D image segmentation,” *IEEE Transactions on Medical Imaging*, 2025 (in press).
+   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “[HNOSeg-XS: extremely small Hartley neural operator for efficient and resolution-robust 3D image segmentation](https://doi.org/10.1109/TMI.2025.3588458),” *IEEE Transactions on Medical Imaging*, 2025 (in press). [[pdf](https://arxiv.org/pdf/2507.08205)]
     ```
    @article{Journal:Wong:TMI2025:hnoseg-xs,
       title =        {{HNOSeg-XS}: extremely small {Hartley} neural operator for efficient and resolution-robust {3D} image segmentation},
@@ -98,7 +98,7 @@ Although the above command runs both training and testing, the testing is perfor
    
 2. **HartleyMHA**
 
-   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “HartleyMHA: self-attention in frequency domain for resolution-robust and parameter-efficient 3D image segmentation,” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2023, pp. 364–373. [[pdf](https://arxiv.org/pdf/2310.04466.pdf)]
+   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “[HartleyMHA: self-attention in frequency domain for resolution-robust and parameter-efficient 3D image segmentation](https://link.springer.com/chapter/10.1007/978-3-031-43901-8_35),” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2023, pp. 364–373. [[pdf](https://arxiv.org/pdf/2310.04466)]
     ```
    @inproceedings{Conference:Wong:MICCAI2023:hartleymha,
       title =        {{HartleyMHA}: self-attention in frequency domain for resolution-robust and parameter-efficient {3D} image segmentation},
@@ -111,7 +111,7 @@ Although the above command runs both training and testing, the testing is perfor
 
 3. **FNOSeg3D**
 
-   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “FNOSeg3D: resolution-robust 3D image segmentation with Fourier neural operator,” in *IEEE International Symposium on Biomedical Imaging (ISBI)*, 2023, pp. 1–5. [[pdf](https://arxiv.org/pdf/2310.03872.pdf)]
+   Ken C. L. Wong, Hongzhi Wang, and Tanveer Syeda-Mahmood, “[FNOSeg3D: resolution-robust 3D image segmentation with Fourier neural operator](https://ieeexplore.ieee.org/document/10230586),” in *IEEE International Symposium on Biomedical Imaging (ISBI)*, 2023, pp. 1–5. [[pdf](https://arxiv.org/pdf/2310.03872)]
     ```
    @inproceedings{Conference:Wong:ISBI2023:fnoseg3d,
       title =        {{FNOSeg3D}: resolution-robust {3D} image segmentation with {Fourier} neural operator},
@@ -124,7 +124,7 @@ Although the above command runs both training and testing, the testing is perfor
 
 4. **V-Net-DS (V-Net with deep supervision)**
 
-   Ken C. L. Wong, Mehdi Moradi, Hui Tang, and Tanveer Syeda-Mahmood, “3D segmentation with exponential logarithmic loss for highly unbalanced object sizes,” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2018, pp. 612–619. [[pdf](https://arxiv.org/pdf/1809.00076.pdf)]
+   Ken C. L. Wong, Mehdi Moradi, Hui Tang, and Tanveer Syeda-Mahmood, “[3D segmentation with exponential logarithmic loss for highly unbalanced object sizes](https://link.springer.com/chapter/10.1007/978-3-030-00931-1_70),” in *International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2018, pp. 612–619. [[pdf](https://arxiv.org/pdf/1809.00076)]
     ```
    @inproceedings{Conference:Wong:MICCAI2018:3d,
       title =        {{3D} segmentation with exponential logarithmic loss for highly unbalanced object sizes},
@@ -137,7 +137,7 @@ Although the above command runs both training and testing, the testing is perfor
 
 5. **Pearson’s Correlation Coefficient (PCC) loss**
 
-   Ken C. L. Wong and Mehdi Moradi, “3D segmentation with fully trainable Gabor kernels and Pearson’s correlation coefficient,” in *Machine Learning in Medical Imaging*, 2022, pp. 53–61. [[pdf](https://arxiv.org/pdf/2201.03644.pdf)]
+   Ken C. L. Wong and Mehdi Moradi, “[3D segmentation with fully trainable Gabor kernels and Pearson’s correlation coefficient](https://link.springer.com/chapter/10.1007/978-3-031-21014-3_6),” in *Machine Learning in Medical Imaging*, 2022, pp. 53–61. [[pdf](https://arxiv.org/pdf/2201.03644)]
    ```
    @inproceedings{Workshop:Wong:MLMI2022:3d,
       title =        {{3D} segmentation with fully trainable {Gabor} kernels and {Pearson's} correlation coefficient},
