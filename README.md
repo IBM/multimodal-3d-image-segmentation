@@ -2,6 +2,11 @@
 
 ## Highlights
 
+:white_check_mark: Resolution robust, computationally efficient, and extremely small models  
+:white_check_mark: Self-normalizing neural networks  
+:white_check_mark: Trained end-to-end, no specialized training algorithms are required  
+:white_check_mark: Written in PyTorch
+
 This repository contains our image segmentation models applicable to both 2D and 3D segmentation. Our most recent HNOSeg-XS (e**X**tremely **S**mall **H**artley **N**eural **O**perator for **Seg**mentation) architecture, apart from its intrinsic zero-shot super-resolution property, it is also computationally efficient and extremely parameter efficient. When tested on the BraTS'23, KiTS'23, and MVSeg'23 datasets with a Tesla V100 GPU, HNOSeg-XS showed its superior resolution robustness with fewer than **34.7k** model parameters. It also achieved the overall best inference time (< 0.24 s) and memory efficiency (< 1.8 GiB) compared to the tested CNN and transformer models. This repository also contains the model architectures of our previous [publications](#publications), including HartleyMHA, FNOSeg3D, and V-Net-DS. Please see the [technical details](#technical-details) for installation and running.
 
 <img src="docs/assets/images/computational_efficiency.png" width="600">
